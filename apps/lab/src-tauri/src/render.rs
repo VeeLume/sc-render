@@ -5,7 +5,7 @@
 //!
 //! - `scr://localhost/model?path=…` — the packed buffer of a model loaded
 //!   with [`load_model`].
-//! - `scr://localhost/texture?path=…&kind=color|normal|gloss&max=1024` —
+//! - `scr://localhost/texture?path=…&kind=color|normal|gloss|normal_gloss&max=1024` —
 //!   8-byte header (width, height as `u32` LE) then RGBA8 rows.
 
 use std::collections::HashMap;
@@ -178,6 +178,7 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
             let kind = match query.get("kind").map(String::as_str) {
                 Some("normal") => TextureKind::Normal,
                 Some("gloss") => TextureKind::Gloss,
+                Some("normal_gloss") => TextureKind::NormalGloss,
                 _ => TextureKind::Color,
             };
             let max = query

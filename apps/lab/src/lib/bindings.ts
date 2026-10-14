@@ -186,7 +186,18 @@ export type SceneAttachment = {
 /**
  * Bone or geometry node.
  */
-bone: string; part: ScenePart }
+bone: string; 
+/**
+ * Offset from the bone: position, then rotation as a quaternion
+ * `(x, y, z, w)` (a port helper's `Offset`, a `.cdf` part's
+ * `RelPosition` / `RelRotation`).
+ */
+offset_position: [number, number, number]; offset_rotation: [number, number, number, number]; 
+/**
+ * The attached item's own helper (bone or node) that meets the bone,
+ * instead of its origin (`ItemOffsetHelperName`).
+ */
+item_helper: string | null; part: ScenePart }
 /**
  * An item to draw in one cell.
  */

@@ -18,6 +18,9 @@ pub enum TextureKind {
     /// The gloss of a `ddna` map: the separate `.a` texture's red channel,
     /// else the main texture's alpha; delivered in R, G and B.
     Gloss,
+    /// A `ddna` map packed into one texture: normal X, Y in R, G (encoded
+    /// `n × 0.5 + 0.5`; Z is rebuilt by the shader), gloss in B.
+    NormalGloss,
 }
 
 /// Decoded pixels, row-major, top row first.
@@ -37,6 +40,23 @@ pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) 
                 let y = px[1] as f32 / 255.0 * 2.0 - 1.0;
                 let z = (1.0 - x * x - y * y).max(0.0).sqrt();
                 px[2] = ((z * 0.5 + 0.5) * 255.0).round() as u8;
+                px[3] = 255;
+            }
+            Ok(img)
+        }
+        TextureKind::NormalGloss => {
+            let mut img = decode_dds(&t.dds, max_size)?;
+            let alpha = match &t.alpha {
+                Some(a) => Some(decode_dds(a, max_size)?)
+                    .filter(|a| a.width == img.width && a.height == img.height),
+                None => None,
+            };
+            let gloss: Vec<u8> = match &alpha {
+                Some(a) => a.data.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
+                None => img.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect(),
+            };
+            for (px, g) in img.data.as_chunks_mut::<4>().0.iter_mut().zip(gloss) {
+                px[2] = g;
                 px[3] = 255;
             }
             Ok(img)

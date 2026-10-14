@@ -4,7 +4,8 @@ import * as THREE from 'three';
 
 const base = navigator.userAgent.includes('Windows') ? 'http://scr.localhost' : 'scr://localhost';
 
-export type TextureKind = 'color' | 'normal' | 'gloss';
+/** `mask`: decoded like `color` but sampled as linear data (blend maps). */
+export type TextureKind = 'color' | 'mask' | 'normal' | 'gloss' | 'normal_gloss';
 
 function url(route: string, params: Record<string, string | number>): string {
 	const q = Object.entries(params)

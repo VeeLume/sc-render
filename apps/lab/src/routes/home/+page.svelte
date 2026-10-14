@@ -23,7 +23,17 @@
 		'can_drink_3_energy_a',
 		'inventory:Bosco Weapon Display Rack',
 		'srvl_combat_medium_core_03_01_01',
-		'qrt_specialist_medium_helmet_01_01_16'
+		'qrt_specialist_medium_helmet_01_01_16',
+		// Valerie's validation pass (2026-10-14)
+		'inventory:Cataby Backpack',
+		'inventory:Sol-III Flight Suit',
+		'grin_multitool_01_black01',
+		'rsi_deckcrew_armor_light_helmet_01_01_10',
+		'eld_shirt_04_drake_04',
+		'Harvestable_Mineral_1H_Beradom',
+		'Carryable_1H_CY_Physical_Currency_Scrip_Merc_1',
+		'none_pistol_ballistic_01',
+		'vgl_flightsuit_helmet_01_03_01'
 	];
 
 	let canvas: HTMLCanvasElement;

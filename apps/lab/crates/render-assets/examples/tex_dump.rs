@@ -2,7 +2,7 @@
 //! the right by its R, G, B and A channels as greyscale.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example tex_dump -- <out dir> <texture path>...
+//! cargo run -p render-assets --release --example tex_dump -- <out dir> [--kind color|normal|gloss|normal_gloss] <texture path>...
 //! ```
 
 use render_assets::{Assets, TextureKind};
@@ -11,8 +11,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let dir = std::path::PathBuf::from(args.next().ok_or("out dir")?);
     let assets = Assets::open()?;
+    let mut kind = TextureKind::Color;
+    let mut args = args.peekable();
+    if args.peek().map(String::as_str) == Some("--kind") {
+        args.next();
+        kind = match args.next().as_deref() {
+            Some("normal") => TextureKind::Normal,
+            Some("gloss") => TextureKind::Gloss,
+            Some("normal_gloss") => TextureKind::NormalGloss,
+            _ => TextureKind::Color,
+        };
+    }
     for path in args {
-        let t = assets.texture(&path, TextureKind::Color, 256)?;
+        let t = assets.texture(&path, kind, 256)?;
         let (w, h) = (t.width as usize, t.height as usize);
         let mut px = Vec::with_capacity(w * 5 * h * 3);
         for y in 0..h {

@@ -120,6 +120,14 @@ pub struct ScenePiece {
 pub struct SceneAttachment {
     /// Bone or geometry node.
     pub bone: String,
+    /// Offset from the bone: position, then rotation as a quaternion
+    /// `(x, y, z, w)` (a port helper's `Offset`, a `.cdf` part's
+    /// `RelPosition` / `RelRotation`).
+    pub offset_position: [f32; 3],
+    pub offset_rotation: [f32; 4],
+    /// The attached item's own helper (bone or node) that meets the bone,
+    /// instead of its origin (`ItemOffsetHelperName`).
+    pub item_helper: Option<String>,
     pub part: ScenePart,
 }
 
@@ -388,6 +396,15 @@ impl Catalog {
                     (AttachmentKind::Skin, _) => part.pieces.push(piece),
                     (AttachmentKind::Bone, Some(bone)) => part.attachments.push(SceneAttachment {
                         bone: bone.clone(),
+                        offset_position: a.position,
+                        // `.cdf` RelRotation is (w, x, y, z).
+                        offset_rotation: [
+                            a.rotation[1],
+                            a.rotation[2],
+                            a.rotation[3],
+                            a.rotation[0],
+                        ],
+                        item_helper: None,
                         part: ScenePart {
                             record: format!("{record} / {}", a.name),
                             pieces: vec![piece],
@@ -428,7 +445,10 @@ impl Catalog {
                 Ok(g) if self.visuals.get(&g).is_some() => g,
                 _ => continue, // not drawn (sensors, controllers)
             };
-            let Some(helper) = visual.port(&c.port).and_then(|p| p.helper.clone()) else {
+            let Some((port, helper)) = visual
+                .port(&c.port)
+                .and_then(|p| Some((p, p.helper.clone()?)))
+            else {
                 notes.push(format!("{record}: no port {} with a helper", c.port));
                 continue;
             };
@@ -442,6 +462,9 @@ impl Catalog {
             ) {
                 Ok(p) => part.attachments.push(SceneAttachment {
                     bone: helper,
+                    offset_position: port.offset.position,
+                    offset_rotation: ang3_quaternion(port.offset.rotation),
+                    item_helper: port.item_offset_helper.clone(),
                     part: p,
                 }),
                 Err(e) => notes.push(format!("{record}: {} skipped: {e}", c.port)),
@@ -531,6 +554,20 @@ fn default_children(loadout: &[LoadoutEntry]) -> Vec<ChildSpec> {
             })
         })
         .collect()
+}
+
+/// CryEngine `Ang3` degrees (rotation = Rz · Ry · Rx) as a quaternion
+/// `(x, y, z, w)`.
+fn ang3_quaternion([x, y, z]: [f32; 3]) -> [f32; 4] {
+    let (sx, cx) = (x.to_radians() / 2.0).sin_cos();
+    let (sy, cy) = (y.to_radians() / 2.0).sin_cos();
+    let (sz, cz) = (z.to_radians() / 2.0).sin_cos();
+    [
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    ]
 }
 
 fn most_common<'a>(values: impl Iterator<Item = &'a str>) -> Option<&'a str> {

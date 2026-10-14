@@ -47,8 +47,8 @@ export interface CellOptions {
 	/** Extra factor on the rig's rim light (tuning aid). */
 	rimScale?: number;
 	/**
-	 * Strength of a sky-gradient environment for reflections: a bright cap
-	 * overhead, dark below. The light groups name `cm_inventory_probe_cm` but
+	 * Strength of a studio environment for reflections: a dark room with one
+	 * softbox above and toward the camera. The light groups name `cm_inventory_probe_cm` but
 	 * switch it off (and it decodes mostly black with magenta blobs), yet in
 	 * game glossy tops shine white (P6-LR) and dark metal shows a sheen on top
 	 * (power plants); this stands in for that. Reflection only (no diffuse
@@ -94,7 +94,7 @@ export class Cell {
 		this.camera.lookAt(0, 0, 0);
 		this.scene.add(this.ambient);
 		const pmrem = new THREE.PMREMGenerator(this.renderer);
-		this.envMap = pmrem.fromEquirectangular(skyGradient()).texture;
+		this.envMap = pmrem.fromEquirectangular(studioEnvironment()).texture;
 		pmrem.dispose();
 	}
 
@@ -139,7 +139,11 @@ export class Cell {
 		pivot.scale.setScalar(s);
 		pivot.position.copy(centre).multiplyScalar(-s);
 		pivot.traverse((o) => {
-			if ((o as THREE.Mesh).isMesh) o.castShadow = o.receiveShadow = true;
+			const mesh = o as THREE.Mesh;
+			if (!mesh.isMesh) return;
+			// Glass and other see-through surfaces cast no shadow.
+			mesh.castShadow = !(mesh.material as THREE.Material).userData.noShadow;
+			mesh.receiveShadow = true;
 		});
 		if (generation !== this.generation) {
 			log.push('superseded by a newer render');
@@ -196,19 +200,30 @@ export class Cell {
 }
 
 /**
- * Equirectangular sky: white above ~35 deg elevation, half at the horizon,
- * near black below. +Y is up (the cell turns it to screen-up).
+ * Equirectangular studio for reflections: a dark room, dimly lit above, with
+ * one large softbox up and toward the camera. Glossy surfaces then show a
+ * defined highlight (the white blocks on the game's P6-LR icon) and keep
+ * their colour elsewhere; an all-bright sky washed mirror-glossy paint out
+ * to white. +Y is up and +Z points at the camera (the cell turns it).
  */
-function skyGradient(): THREE.DataTexture {
-	const w = 64;
-	const h = 32;
+function studioEnvironment(): THREE.DataTexture {
+	const w = 128;
+	const h = 64;
 	const data = new Float32Array(w * h * 4);
+	const box = new THREE.Vector3(0, Math.sin(40 * DEG), Math.cos(40 * DEG));
+	const dir = new THREE.Vector3();
 	for (let y = 0; y < h; y++) {
 		// A DataTexture's row 0 is v = 0, which three's equirect lookup puts at -Y.
-		const elev = ((y + 0.5) / h) * 180 - 90;
-		const t = THREE.MathUtils.smoothstep(elev, 0, 35);
-		const v = elev < 0 ? 0.02 : 0.5 + 0.5 * t;
-		for (let x = 0; x < w; x++) data.set([v, v, v, 1], (y * w + x) * 4);
+		const elev = (((y + 0.5) / h) * 180 - 90) * DEG;
+		for (let x = 0; x < w; x++) {
+			const az = ((x + 0.5) / w - 0.5) * 2 * Math.PI;
+			dir.set(Math.cos(elev) * Math.cos(az), Math.sin(elev), Math.cos(elev) * Math.sin(az));
+			const room = 0.02 + 0.1 * THREE.MathUtils.smoothstep(elev / DEG, -10, 60);
+			const angle = dir.angleTo(box) / DEG;
+			const softbox = 2 * (1 - THREE.MathUtils.smoothstep(angle, 22, 32));
+			const v = room + softbox;
+			data.set([v, v, v, 1], (y * w + x) * 4);
+		}
 	}
 	const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
 	tex.mapping = THREE.EquirectangularReflectionMapping;
@@ -282,10 +297,49 @@ async function buildItem(item: ScenePart, log: string[], depth = 0): Promise<THR
 			log.push(`${pad}  ${at.part.record}: no bone or node ${at.bone}`);
 			continue;
 		}
-		log.push(`${pad}  on ${at.bone} (${bone ? 'bone' : 'node'}):`);
-		anchor.add(await buildItem(at.part, log, depth + 1));
+		log.push(`${pad}  on ${at.bone} (${bone ? 'bone' : 'node'})${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
+		const child = await buildItem(at.part, log, depth + 1);
+		// The port's offset, then the child moved so its own helper (not its
+		// origin) sits on the port.
+		const holder = new THREE.Group();
+		holder.position.set(...at.offset_position);
+		holder.quaternion.set(...at.offset_rotation);
+		if (at.item_helper) {
+			const h = await helperMatrix(at.part, child, at.item_helper);
+			if (h) {
+				child.matrix.copy(h.invert());
+				child.matrixAutoUpdate = false;
+			} else log.push(`${pad}  ${at.part.record}: no helper ${at.item_helper}`);
+		}
+		holder.add(child);
+		anchor.add(holder);
 	}
 	return group;
+}
+
+/**
+ * An item's helper (a bone of its skeleton, else a node of its geometry) in
+ * the item's own space.
+ */
+async function helperMatrix(part: ScenePart, group: THREE.Object3D, name: string): Promise<THREE.Matrix4 | null> {
+	const lower = name.toLowerCase();
+	if (part.skeleton) {
+		const res = await commands.loadSkeleton(part.skeleton);
+		const bone = res.status === 'ok' ? res.data.find((b) => b.name.toLowerCase() === lower) : undefined;
+		if (bone)
+			return new THREE.Matrix4().compose(
+				new THREE.Vector3(...bone.position),
+				new THREE.Quaternion(...bone.rotation),
+				new THREE.Vector3(1, 1, 1)
+			);
+	}
+	let node: THREE.Object3D | undefined;
+	group.traverse((o) => {
+		if (!node && !(o as THREE.Mesh).isMesh && o.name.toLowerCase() === lower) node = o;
+	});
+	if (!node) return null;
+	group.updateMatrixWorld(true);
+	return new THREE.Matrix4().copy(group.matrixWorld).invert().multiply(node.matrixWorld);
 }
 
 async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette) {
