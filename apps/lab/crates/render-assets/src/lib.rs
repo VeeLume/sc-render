@@ -53,6 +53,20 @@ impl Assets {
         Ok(Model::pack(path, &g))
     }
 
+    /// A `.chr` skeleton's bones, model space.
+    pub fn skeleton(&self, path: &str) -> Result<Vec<BoneInfo>> {
+        let s = sc_extract::Skeleton::read(&self.source, path)?;
+        Ok(s.bones
+            .into_iter()
+            .map(|b| BoneInfo {
+                name: b.name,
+                parent: b.parent.map(|p| p as u32),
+                position: b.position,
+                rotation: b.rotation,
+            })
+            .collect())
+    }
+
     /// A `.mtl` file (authored path, extension optional).
     pub fn material(&self, path: &str) -> Result<MaterialInfo> {
         let path = if path.to_ascii_lowercase().ends_with(".mtl") {
@@ -79,6 +93,17 @@ impl Assets {
             .insert(key, rgba.clone());
         Ok(rgba)
     }
+}
+
+/// A skeleton bone in the model's space.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct BoneInfo {
+    pub name: String,
+    pub parent: Option<u32>,
+    pub position: [f32; 3],
+    /// Quaternion `(x, y, z, w)`.
+    pub rotation: [f32; 4],
 }
 
 /// A `.mtl` file as the renderer consumes it.

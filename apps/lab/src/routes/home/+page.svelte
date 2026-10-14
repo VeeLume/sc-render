@@ -15,9 +15,18 @@
 	let toneMap = $state<ToneMap>('linear');
 	let rimScale = $state(1);
 
+	/** Canvas sized to the item's cell (width / height = aspect). */
+	function fit() {
+		if (!cell) return;
+		const width = Math.min(canvas.parentElement!.clientWidth, 640 * current.aspect);
+		cell.resize(width, width / current.aspect);
+		cell.render();
+	}
+
 	async function show(fx: Fixture, name = fx.id) {
 		current = fx;
 		if (!cell) return;
+		fit();
 		busy = true;
 		error = null;
 		try {
@@ -47,12 +56,7 @@
 	}
 
 	onMount(() => {
-		cell = new Cell(canvas, 1);
-		const fit = () => {
-			const size = Math.min(canvas.parentElement!.clientWidth, 640);
-			cell!.resize(size, size);
-			cell!.render();
-		};
+		cell = new Cell(canvas);
 		fit();
 		window.addEventListener('resize', fit);
 		(async () => {
@@ -87,8 +91,8 @@
 		</div>
 	</aside>
 	<main class="min-w-0 flex-1">
-		<div class="relative max-w-[640px] rounded-xl border bg-[#1c2632]">
-			<canvas bind:this={canvas} class="block aspect-square w-full"></canvas>
+		<div class="relative rounded-xl border bg-[#1c2632]" style="max-width: {640 * current.aspect}px">
+			<canvas bind:this={canvas} class="block w-full" style="aspect-ratio: {current.aspect}"></canvas>
 			{#if busy}<div class="absolute inset-0 grid place-items-center text-sm text-muted-foreground">loading…</div>{/if}
 		</div>
 		{#if error}<pre class="mt-3 text-xs whitespace-pre-wrap text-red-400">{error}</pre>{/if}

@@ -17,7 +17,7 @@ pub struct Model {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ModelInfo {
     pub path: String,
-    /// The `.mtl` the geometry names, without extension.
+    /// The `.mtl` the geometry names (bare names resolved next to it).
     pub material: Option<String>,
     pub vertex_count: u32,
     pub index_count: u32,
@@ -99,7 +99,7 @@ impl Model {
         });
         let info = ModelInfo {
             path: path.to_string(),
-            material: g.material.clone(),
+            material: g.material_path(path),
             vertex_count: n as u32,
             index_count: g.indices.len() as u32,
             positions_offset,

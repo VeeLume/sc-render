@@ -42,6 +42,17 @@ async loadMaterial(path: string) : Promise<Result<MaterialInfo, string>> {
 }
 },
 /**
+ * A `.chr` skeleton's bones.
+ */
+async loadSkeleton(path: string) : Promise<Result<BoneInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_skeleton", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Save a rendered cell as `<app data>/snapshots/<name>.png`; returns the path.
  */
 async saveSnapshot(name: string, png: number[]) : Promise<Result<string, string>> {
@@ -80,6 +91,14 @@ export type AppSettings = {
  * Whether first-launch onboarding has been completed or skipped.
  */
 onboarding_completed: boolean }
+/**
+ * A skeleton bone in the model's space.
+ */
+export type BoneInfo = { name: string; parent: number | null; position: [number, number, number]; 
+/**
+ * Quaternion `(x, y, z, w)`.
+ */
+rotation: [number, number, number, number] }
 export type LayerInfo = { name: string; path: string; submaterial: string; tint: [number, number, number]; wear_tint: [number, number, number]; gloss_mult: number; wear_gloss: number; uv_tiling: number; palette_tint: number }
 /**
  * A `.mtl` file as the renderer consumes it.
@@ -87,7 +106,7 @@ export type LayerInfo = { name: string; path: string; submaterial: string; tint:
 export type MaterialInfo = { path: string; submaterials: SubMaterialInfo[] }
 export type ModelInfo = { path: string; 
 /**
- * The `.mtl` the geometry names, without extension.
+ * The `.mtl` the geometry names (bare names resolved next to it).
  */
 material: string | null; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number | null; tangents_offset: number | null; uvs_offset: number | null; colors_offset: number | null; indices_offset: number; byte_length: number; nodes: NodeInfo[]; submeshes: SubmeshInfo[] }
 export type NodeInfo = { name: string; parent: number | null; 

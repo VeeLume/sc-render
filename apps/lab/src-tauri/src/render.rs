@@ -1,6 +1,7 @@
 //! Render inputs for the webview: typed commands for descriptions, and the
 //! `scr` URI scheme for the heavy bytes (model buffers, decoded textures),
-//! so they skip JSON.
+//! so they skip JSON. (`tauri dev` watches only this crate: after changing
+//! `crates/render-assets` or sc-holotable, touch a file here to rebuild.)
 //!
 //! - `scr://localhost/model?path=…` — the packed buffer of a model loaded
 //!   with [`load_model`].
@@ -10,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use render_assets::{Assets, MaterialInfo, ModelInfo, TextureKind};
+use render_assets::{Assets, BoneInfo, MaterialInfo, ModelInfo, TextureKind};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::{Manager, State, UriSchemeContext, UriSchemeResponder};
 
@@ -46,6 +47,20 @@ pub async fn load_model(state: State<'_, RenderState>, path: String) -> Result<M
         .unwrap()
         .insert(path.to_ascii_lowercase(), Arc::new(model.buffer));
     Ok(model.info)
+}
+
+/// A `.chr` skeleton's bones.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_skeleton(
+    state: State<'_, RenderState>,
+    path: String,
+) -> Result<Vec<BoneInfo>, String> {
+    let assets = state.assets()?;
+    tauri::async_runtime::spawn_blocking(move || assets.skeleton(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// A `.mtl` file (extension optional).

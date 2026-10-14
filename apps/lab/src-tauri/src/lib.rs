@@ -32,6 +32,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         commands::settings_save,
         render::load_model,
         render::load_material,
+        render::load_skeleton,
         render::save_snapshot,
         render::save_log,
     ])

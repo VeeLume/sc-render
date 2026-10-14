@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { commands, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
-import type { Fixture } from './fixtures';
+import type { Fixture, Palette } from './fixtures';
 
 const DEG = Math.PI / 180;
 const FOV = 10;
@@ -54,16 +54,16 @@ export class Cell {
 	private lights: THREE.Object3D[] = [];
 	private ambient = new THREE.AmbientLight(0x9aa6b8, 0.05);
 
-	constructor(
-		readonly canvas: HTMLCanvasElement,
-		readonly aspect = 1
-	) {
+	/** Cell width / height; set per item in `show`. */
+	aspect = 1;
+
+	constructor(readonly canvas: HTMLCanvasElement) {
 		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 		this.renderer.toneMapping = THREE.LinearToneMapping;
 		this.renderer.shadowMap.enabled = true;
 		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-		this.camera = new THREE.PerspectiveCamera(FOV, aspect, 0.1, 100);
+		this.camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
 		// A cell is 1 unit high; back off until it fills the vertical FOV.
 		this.camera.position.set(0, 0, -0.5 / Math.tan((FOV / 2) * DEG));
 		this.camera.up.set(0, -1, 0);
@@ -83,15 +83,38 @@ export class Cell {
 		if (this.item) this.scene.remove(this.item);
 		this.item = null;
 
-		const res = await commands.loadModel(fx.geometry);
-		if (res.status !== 'ok') throw new Error(res.error);
-		const info = res.data;
-		const mtlPath = fx.material ?? info.material;
-		const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
-		log.push(`${info.vertex_count} vertices, ${info.index_count / 3} triangles, ${info.submeshes.length} submeshes`);
-		log.push(`material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
-
-		const model = await buildModel(info, mtl?.submaterials ?? [], log);
+		this.aspect = fx.aspect;
+		const model = new THREE.Group();
+		for (const part of [{ geometry: fx.geometry, material: fx.material }, ...(fx.parts ?? [])]) {
+			const res = await commands.loadModel(part.geometry);
+			if (res.status !== 'ok') throw new Error(res.error);
+			const info = res.data;
+			const mtlPath = part.material ?? fx.material ?? info.material;
+			const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
+			log.push(`${part.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
+			log.push(`  material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
+			model.add(await buildModel(info, mtl?.submaterials ?? [], log, fx.palette));
+		}
+		if (fx.skeleton && fx.attachments?.length) {
+			const bones = await commands.loadSkeleton(fx.skeleton);
+			if (bones.status !== 'ok') throw new Error(bones.error);
+			for (const at of fx.attachments) {
+				const bone = bones.data.find((b) => b.name.toLowerCase() === at.bone.toLowerCase());
+				if (!bone) {
+					log.push(`attachment ${at.geometry.split('/').pop()}: no bone ${at.bone}`);
+					continue;
+				}
+				const res = await commands.loadModel(at.geometry);
+				if (res.status !== 'ok') throw new Error(res.error);
+				const mtlPath = at.material ?? res.data.material;
+				const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
+				const part = await buildModel(res.data, mtl?.submaterials ?? [], log, at.palette);
+				part.position.set(...bone.position);
+				part.quaternion.set(...bone.rotation);
+				model.add(part);
+				log.push(`attachment ${at.geometry.split('/').pop()} on ${bone.name}`);
+			}
+		}
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -183,7 +206,7 @@ function visibleBounds(root: THREE.Object3D): THREE.Box3 {
 	return box;
 }
 
-async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[]) {
+async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette) {
 	const buf = await fetchModelBuffer(info.path);
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
@@ -192,8 +215,10 @@ async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[
 	if (info.normals_offset != null)
 		geomAttrs.normal = new THREE.BufferAttribute(new Float32Array(buf, info.normals_offset, n * 3), 3);
 	if (info.uvs_offset != null) geomAttrs.uv = new THREE.BufferAttribute(new Float32Array(buf, info.uvs_offset, n * 2), 2);
+	// Raw vertex colour under its own name: `color` would make three tint the
+	// diffuse with it; LayerBlend decodes decal coordinates from it instead.
 	if (info.colors_offset != null)
-		geomAttrs.color = new THREE.BufferAttribute(new Uint8Array(buf, info.colors_offset, n * 4), 4, true);
+		geomAttrs.scColor = new THREE.BufferAttribute(new Uint8Array(buf, info.colors_offset, n * 4), 4, true);
 	const indices = new Uint32Array(buf, info.indices_offset, info.index_count);
 
 	// Node tree; transforms are parent-relative 3×4 row-major.
@@ -216,7 +241,7 @@ async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[
 	for (const sm of info.submeshes) {
 		const sub = subs[sm.material];
 		if (!materialCache.has(sm.material)) {
-			materialCache.set(sm.material, sub ? buildMaterial(sub) : Promise.resolve(null));
+			materialCache.set(sm.material, sub ? buildMaterial(sub, palette) : Promise.resolve(null));
 		}
 		const material = await materialCache.get(sm.material)!;
 		if (!material) {
