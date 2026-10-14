@@ -3,6 +3,7 @@
 //!
 //! ```bash
 //! cargo run -p render-assets --release --example inventory_tree -- <inventory.json> <filter>...
+//! cargo run -p render-assets --release --example inventory_tree -- --crc <class crc>...
 //! ```
 
 use sc_extract::{AssetConfig, AssetData, AssetSource, CrcIndex, Datacore, RecordPaths};
@@ -24,6 +25,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|r| format!("{} [{}] {}", r.name, r.guid, r.path))
             .unwrap_or_else(|| format!("?crc {crc}"))
     };
+    // `--crc <n>...` instead of a file: resolve bare class CRCs.
+    if file == "--crc" {
+        for f in &filters {
+            println!("{f}: {}", name(f.parse()?));
+        }
+        return Ok(());
+    }
     let inv: Value = serde_json::from_str(&std::fs::read_to_string(file)?)?;
     fn walk(v: &Value, depth: usize, name: &dyn Fn(u64) -> String, out: &mut Vec<String>) {
         let crc = v["class_crc"].as_u64().unwrap_or(0);

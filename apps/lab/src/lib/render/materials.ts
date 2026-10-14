@@ -11,7 +11,8 @@
 //                  mask); TexSlot3 macro normal; layer textures tiled by the
 //                  layer's UVTiling. A layer with PaletteTint 1-3 takes the
 //                  tint palette's entry A-C: colour multiplied in, its spec as
-//                  F0, its glossiness scaling gloss. With the DECALS feature,
+//                  F0 (dielectric layers only), its glossiness pulling gloss
+//                  towards 1. With the DECALS feature,
 //                  TexSlot9 is a decal sheet placed by the vertex colour (24
 //                  bits -> two 12-bit coordinates, StarBreaker addon's
 //                  layer_blend_decals); DiffuseDecalGloss / DiffuseDecalSpec
@@ -62,6 +63,14 @@ const hasGloss = (file: string) => /_ddna\./i.test(file);
  */
 const F0_LINE =
 	'material.specularColor = min( pow2( ( material.ior - 1.0 ) / ( material.ior + 1.0 ) ) * specularColorFactor, vec3( 1.0 ) ) * specularIntensityFactor;';
+
+/**
+ * The environment only reflects: keep its specular, drop its diffuse
+ * irradiance (matte items stay as calibrated; see CellOptions.env).
+ */
+const IBL_LINE = '#include <lights_fragment_maps>';
+const SPECULAR_ONLY_IBL = `${IBL_LINE}
+iblIrradiance = vec3( 0.0 );`;
 
 function color(c: [number, number, number]): THREE.Color {
 	return new THREE.Color().setRGB(c[0], c[1], c[2]);
@@ -115,7 +124,8 @@ async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
 				specMap
 					? 'material.specularColor = uF0 * texture2D( uSpecMap, vMapUv ).rgb;'
 					: 'material.specularColor = uF0;'
-			);
+			)
+			.replace(IBL_LINE, SPECULAR_ONLY_IBL);
 	};
 	if (s.features.includes('DECAL')) {
 		m.transparent = true;
@@ -139,6 +149,8 @@ interface ResolvedLayer {
 	color: THREE.Color;
 	f0: THREE.Color;
 	glossMul: number;
+	/** Palette glossiness 0..1; pulls the gloss towards 1 (0 = no palette). */
+	paletteGloss: number;
 	tiling: number;
 }
 
@@ -150,6 +162,7 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 		color: new THREE.Color(0.5, 0.5, 0.5),
 		f0: new THREE.Color(0.04, 0.04, 0.04),
 		glossMul: 0.5,
+		paletteGloss: 0,
 		tiling: 1
 	};
 	if (!l) return fallback;
@@ -159,6 +172,9 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 	const diffSlot = slot(sub, 'TexSlot1');
 	const nrmSlot = slot(sub, 'TexSlot2');
 	const entry = l.palette_tint >= 1 && l.palette_tint <= 3 ? palette?.[l.palette_tint - 1] : undefined;
+	// A conductor (dark diffuse, bright specular; StarBreaker's layer_metallic)
+	// keeps its own F0; only a dielectric takes the palette's spec as F0.
+	const metal = Math.max(...sub.diffuse) < 0.1 && Math.max(...sub.specular) > 0.25;
 	return {
 		diff: diffSlot ? await fetchTexture(diffSlot.file, 'color') : null,
 		nrm: nrmSlot ? await fetchTexture(nrmSlot.file, 'normal') : null,
@@ -166,8 +182,10 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 		color: color(sub.diffuse)
 			.multiply(color(l.tint))
 			.multiply(entry ? srgb(entry.tint) : new THREE.Color(1, 1, 1)),
-		f0: entry ? srgb(entry.spec) : color(sub.specular),
-		glossMul: (sub.shininess / 255) * l.gloss_mult * (entry ? entry.gloss / 255 : 1),
+		f0: entry && !metal ? srgb(entry.spec) : color(sub.specular),
+		glossMul: (sub.shininess / 255) * l.gloss_mult,
+		// StarBreaker's layer surface: smoothness = mix(texture gloss, 1, palette glossiness).
+		paletteGloss: entry ? entry.gloss / 255 : 0,
 		tiling: l.uv_tiling || 1
 	};
 }
@@ -216,6 +234,8 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 			uWearTile: { value: wear.tiling },
 			uBaseGlossMul: { value: base.glossMul },
 			uWearGlossMul: { value: wear.glossMul },
+			uBasePalGloss: { value: base.paletteGloss },
+			uWearPalGloss: { value: wear.paletteGloss },
 			uBaseF0: { value: base.f0 },
 			uWearF0: { value: wear.f0 },
 			uDecal: { value: decal ?? BLACK },
@@ -246,7 +266,7 @@ vDecalUv = vec2( dU, dPacked - dU * 4096.0 ) / 4095.0 * 4.0 - 0.5;`
 				`#include <common>
 uniform sampler2D uBaseDiff, uWearDiff, uBaseNrm, uWearNrm, uBaseGloss, uWearGloss, uWearMask, uMacroNrm;
 uniform vec3 uBaseColor, uWearColor, uBaseF0, uWearF0, uDecalSpec;
-uniform float uBaseTile, uWearTile, uBaseGlossMul, uWearGlossMul, uHasDecal, uDecalGloss, uWearAmount;
+uniform float uBaseTile, uWearTile, uBaseGlossMul, uWearGlossMul, uBasePalGloss, uWearPalGloss, uHasDecal, uDecalGloss, uWearAmount;
 uniform sampler2D uDecal;
 varying vec2 vDecalUv;
 float wearF;
@@ -267,12 +287,13 @@ diffuseColor.rgb = mix( diffuseColor.rgb, decalTex.rgb, decalA );`
 			.replace(
 				'#include <roughnessmap_fragment>',
 				`float roughnessFactor = 1.0 - mix(
-	texture2D( uBaseGloss, vMapUv * uBaseTile ).g * uBaseGlossMul,
-	texture2D( uWearGloss, vMapUv * uWearTile ).g * uWearGlossMul,
+	mix( texture2D( uBaseGloss, vMapUv * uBaseTile ).g * uBaseGlossMul, 1.0, uBasePalGloss ),
+	mix( texture2D( uWearGloss, vMapUv * uWearTile ).g * uWearGlossMul, 1.0, uWearPalGloss ),
 	wearF );
 roughnessFactor = mix( roughnessFactor, 1.0 - uDecalGloss, decalA );`
 			)
 			.replace(F0_LINE, 'material.specularColor = mix( mix( uBaseF0, uWearF0, wearF ), uDecalSpec, decalA );')
+			.replace(IBL_LINE, SPECULAR_ONLY_IBL)
 			.replace(
 				'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
 				`vec3 nLayer = normalize( mix(

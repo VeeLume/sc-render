@@ -198,11 +198,15 @@ const GEN_GREYLIGHT_SUNYELLOW_REDBROWN: Palette = [
 	{ tint: [181, 103, 77], spec: [59, 59, 59], gloss: 255 }
 ];
 
-/** PlayerDeco_Gunrack_4P_3R_lowtech_1_a ("Bosco Weapon Display Rack"): Misc / Weapon -> the Misc UNDEFINED category, default rig. */
+/**
+ * PlayerDeco_Gunrack_4P_3R_lowtech_1_a ("Bosco Weapon Display Rack"): Misc /
+ * Weapon matches no PIT orientation entry, so no offset; the game's cell shows
+ * the rack's back (checked against Valerie's screenshot). Default rig.
+ */
 const RACK = {
 	geometry: 'objects/buildingsets/human/lowtech/prop/gunrack/gunrack_1_a.cga',
 	palette: GEN_GREYLIGHT_SUNYELLOW_REDBROWN,
-	offset: [0, 155, 2.5] as [number, number, number],
+	offset: [0, 0, 0] as [number, number, number],
 	rig: MASTER_RIG,
 	aspect: 1
 };

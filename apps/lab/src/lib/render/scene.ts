@@ -5,7 +5,6 @@
 // fitted to 70% of the cell's width, height and depth, lit by its category's
 // light group (rotated (90,180,0), projectors along local +X).
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { commands, type BoneInfo, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
@@ -39,10 +38,13 @@ export interface CellOptions {
 	/** Extra factor on the rig's rim light (tuning aid). */
 	rimScale?: number;
 	/**
-	 * Strength of a neutral studio environment for reflections. The light
-	 * groups name `cm_inventory_probe_cm` but switch it off (and it decodes
-	 * mostly black with magenta blobs), yet in-game metal shows a grey sheen,
-	 * so some reflection reaches the items; this stands in for it. 0 = off.
+	 * Strength of a sky-gradient environment for reflections: a bright cap
+	 * overhead, dark below. The light groups name `cm_inventory_probe_cm` but
+	 * switch it off (and it decodes mostly black with magenta blobs), yet in
+	 * game glossy tops shine white (P6-LR) and dark metal shows a sheen on top
+	 * (power plants); this stands in for that. Reflection only (no diffuse
+	 * irradiance). 1 keeps the JS-400, P4-AR and PIPS as calibrated and lifts
+	 * the P6-LR's glossy tops; the game's P6-LR is brighter still. 0 = off.
 	 */
 	env?: number;
 }
@@ -79,7 +81,7 @@ export class Cell {
 		this.camera.lookAt(0, 0, 0);
 		this.scene.add(this.ambient);
 		const pmrem = new THREE.PMREMGenerator(this.renderer);
-		this.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+		this.envMap = pmrem.fromEquirectangular(skyGradient()).texture;
 		pmrem.dispose();
 	}
 
@@ -159,6 +161,8 @@ export class Cell {
 		this.lights.push(group);
 		this.ambient.intensity = opts.ambient;
 		this.scene.environment = opts.env ? this.envMap : null;
+		// The cell's up is -Y (camera.up); turn the studio so its ceiling is above the item.
+		this.scene.environmentRotation.set(Math.PI, 0, 0);
 		this.scene.environmentIntensity = opts.env ?? 0;
 		this.renderer.toneMapping = TONE_MAPS[opts.toneMap ?? 'linear'];
 	}
@@ -166,6 +170,27 @@ export class Cell {
 	render() {
 		this.renderer.render(this.scene, this.camera);
 	}
+}
+
+/**
+ * Equirectangular sky: white above ~35 deg elevation, half at the horizon,
+ * near black below. +Y is up (the cell turns it to screen-up).
+ */
+function skyGradient(): THREE.DataTexture {
+	const w = 64;
+	const h = 32;
+	const data = new Float32Array(w * h * 4);
+	for (let y = 0; y < h; y++) {
+		// A DataTexture's row 0 is v = 0, which three's equirect lookup puts at -Y.
+		const elev = ((y + 0.5) / h) * 180 - 90;
+		const t = THREE.MathUtils.smoothstep(elev, 0, 35);
+		const v = elev < 0 ? 0.02 : 0.5 + 0.5 * t;
+		for (let x = 0; x < w; x++) data.set([v, v, v, 1], (y * w + x) * 4);
+	}
+	const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
+	tex.mapping = THREE.EquirectangularReflectionMapping;
+	tex.needsUpdate = true;
+	return tex;
 }
 
 /**
