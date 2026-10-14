@@ -15,3 +15,6 @@ image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile"
 [features]
 default = []
 specta = ["dep:specta"]
+
+[dev-dependencies]
+serde_json = "1"

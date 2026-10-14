@@ -1,4 +1,4 @@
-// Stage-1 test items. STOPGAP: geometry, material, pose offset and light rig
+// Test items. STOPGAP: geometry, material, pose offset and light rig
 // are written out by hand from the DCB (see the sc-holotable notes on
 // inventory item icons). The typed per-item recipe from sc-holotable
 // replaces this file.
@@ -31,20 +31,10 @@ export interface FixturePart {
 }
 
 /**
- * A part on a skeleton bone: a .cdf CA_BONE attachment, or a default-loadout
- * child on its item port's helper bone (SItemPortDefAttachmentImplementationBone).
- * Drawn with its own material, not the item's skin palette.
+ * One item's geometry: a model plus further parts drawn with its palette,
+ * and the items attached to it (which may carry attachments of their own).
  */
-export interface FixtureAttachment extends FixturePart {
-	bone: string;
-	/** The attached item's own default palette (its SubGeometry `Palette`). */
-	palette?: Palette;
-}
-
-export interface Fixture {
-	id: string;
-	label: string;
-	geometry: string;
+export interface ItemPart extends FixturePart {
 	/** `.mtl` from the DCB; when absent the geometry's MtlName chunk names it. */
 	material?: string;
 	/** Further geometries (e.g. a .cdf's CA_BONE attachment on `root`). */
@@ -52,8 +42,23 @@ export interface Fixture {
 	/** `.chr` skeleton the attachments hang on (the .cdf's Model). */
 	skeleton?: string;
 	attachments?: FixtureAttachment[];
-	/** The skin variant's tint palette (SubGeometry `Palette`). */
+	/** The item's tint palette (its geometry node's `Palette`). */
 	palette?: Palette;
+}
+
+/**
+ * An item on a parent's attach point: a .cdf CA_BONE attachment, or a
+ * loadout child on its item port's helper (SItemPortDefAttachmentImplementationBone).
+ * `bone` names a skeleton bone or, without one, a node of the parent's
+ * geometry (a .cga helper such as a rack's `$slot_rifle_1`).
+ */
+export interface FixtureAttachment extends ItemPart {
+	bone: string;
+}
+
+export interface Fixture extends ItemPart {
+	id: string;
+	label: string;
 	/** PIT `orientationOffset` of the item's category, degrees. */
 	offset: [number, number, number];
 	rig: RigLight[];
@@ -108,7 +113,100 @@ const GMNI_PINK_PINK_CIAN: Palette = [
 	{ tint: [89, 212, 231], spec: [89, 212, 231], gloss: 181 }
 ];
 
+/** tintpalettes/brand/behr/weapons/behr_optic_default */
+const BEHR_OPTIC_DEFAULT: Palette = [
+	{ tint: [51, 51, 51], spec: [143, 139, 136], gloss: 139 },
+	{ tint: [29, 29, 29], spec: [65, 65, 65], gloss: 235 },
+	{ tint: [14, 14, 14], spec: [68, 68, 68], gloss: 155 }
+];
+
+/** tintpalettes/brand/hdgw/weapons/hdgw_grey_black */
+const HDGW_GREY_BLACK: Palette = [
+	{ tint: [0, 0, 0], spec: [179, 179, 179], gloss: 255 },
+	{ tint: [55, 55, 55], spec: [54, 54, 54], gloss: 238 },
+	{ tint: [39, 39, 39], spec: [44, 44, 44], gloss: 204 }
+];
+
+/** tintpalettes/brand/hdgw/weapons/hdgw_grey_brown_black */
+const HDGW_GREY_BROWN_BLACK: Palette = [
+	{ tint: [0, 0, 0], spec: [179, 179, 179], gloss: 230 },
+	{ tint: [245, 117, 43], spec: [68, 68, 68], gloss: 230 },
+	{ tint: [0, 0, 0], spec: [188, 188, 188], gloss: 213 }
+];
+
+// Valerie's hangar rack (inventory.json, Hangar_XLTop_NewBabbage): port_crc is
+// crc32c(port name), e.g. 1163995043 = `$slot_rifle_1`.
+
+/** behr_sniper_ballistic_01 with its loadout from the inventory dump. */
+const P6LR: ItemPart = {
+	// .cdf: CA_SKIN parts + CA_BONE body on root, CA_BONE bullet; base record -> behr_weapon_default.
+	geometry: 'objects/fps_weapons/weapons_v7/behr/sniper/p6lr/bsnp_fps_behr_p6lr_parts.skin',
+	material: 'objects/fps_weapons/weapons_v7/behr/sniper/p6lr/bsnp_fps_behr_p6lr_mat.mtl',
+	parts: [{ geometry: 'objects/fps_weapons/weapons_v7/behr/sniper/p6lr/bsnp_fps_behr_p6lr_body.cgf' }],
+	skeleton: 'objects/fps_weapons/weapons_v7/behr/sniper/p6lr/bsnp_fps_behr_p6lr.chr',
+	attachments: [
+		{ geometry: 'objects/fps_weapons/ammo/ccti/ammo_fps_ccti_50cal.cgf', bone: 'bullet' },
+		// barrel_attach -> arma_barrel_comp_s2_03 (no palette)
+		{ geometry: 'objects/fps_weapons/attachments/compensators/arma/cmpn_s02_arma_03.cgf', bone: 'barrel_attachment' },
+		// optics_attach -> hdgw_optics_tsco_x4_s2
+		{
+			geometry: 'objects/fps_weapons/attachments/sights_scopes/hdgw/optc_s02_hdgw_01.cgf',
+			bone: 'sight_attachment',
+			palette: HDGW_GREY_BLACK
+		},
+		// underbarrel_attach -> nvtc_ubarrel_lasr_s1 (no palette)
+		{ geometry: 'objects/fps_weapons/attachments/laserpointers/nvtac/lsrp_s01_nvtac_01.cgf', bone: 'underbarrel_attachment' },
+		// magazine_attach -> behr_sniper_ballistic_01_mag
+		{
+			geometry: 'objects/fps_weapons/attachments/magazines/behr/mgzn_s03_behr_p6lr.cgf',
+			material: 'objects/fps_weapons/attachments/magazines/behr/mgzn_s03_behr_p6lr_mat.mtl',
+			bone: 'magAttach',
+			palette: BEHR_DEFAULT
+		}
+	],
+	palette: BEHR_DEFAULT
+};
+
+/** hdgw_rifle_ballistic_01 with its loadout; a .cga, so ports are geometry nodes. */
+const HDGW_RIFLE: ItemPart = {
+	geometry: 'objects/fps_weapons/weapons_v7/hdgw/rifle/ballistic_01/hdgw_rifle_ballistic_01.cga',
+	attachments: [
+		{ geometry: 'objects/fps_weapons/attachments/compensators/arma/cmpn_s02_arma_01.cgf', bone: 'barrel_attachment' },
+		{
+			geometry: 'objects/fps_weapons/attachments/sights_scopes/behr/optc_s01_behr_04.cga',
+			bone: 'sight_attachment',
+			palette: BEHR_OPTIC_DEFAULT
+		},
+		{ geometry: 'objects/fps_weapons/attachments/laserpointers/klwe/lsrp_s01_klwe_01.cgf', bone: 'underbarrel_attachment' },
+		{
+			geometry: 'objects/fps_weapons/attachments/magazines/hdgw/mgzn_hdgw_rifle_ballistic_01_a.cgf',
+			bone: 'magAttach',
+			palette: HDGW_GREY_BROWN_BLACK
+		}
+	],
+	palette: HDGW_GREY_BROWN_BLACK
+};
+
+/** PlayerDeco_Gunrack_4P_3R_lowtech_1_a: Misc / Weapon -> the Misc UNDEFINED category, default rig. */
+const RACK = {
+	geometry: 'objects/buildingsets/human/lowtech/prop/gunrack/gunrack_1_a.cga',
+	offset: [0, 155, 2.5] as [number, number, number],
+	rig: MASTER_RIG,
+	aspect: 1
+};
+
 export const FIXTURES: Fixture[] = [
+	{ id: 'p6lr', label: 'P6-LR (rack loadout)', ...P6LR, offset: [0, 125, 5], rig: WEAPONS_PRIMARY_RIG, aspect: 2 },
+	{ id: 'rack', label: 'Besco weapon rack', ...RACK },
+	{
+		id: 'rack_loaded',
+		label: 'Besco weapon rack (loaded)',
+		...RACK,
+		attachments: [
+			{ ...P6LR, bone: '$slot_rifle_1' },
+			{ ...HDGW_RIFLE, bone: '$slot_rifle_2' }
+		]
+	},
 	{
 		id: 'p4ar_starkitten',
 		label: 'P4-AR "Star Kitten"',

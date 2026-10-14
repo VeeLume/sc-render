@@ -5,10 +5,10 @@
 // fitted to 70% of the cell's width, height and depth, lit by its category's
 // light group (rotated (90,180,0), projectors along local +X).
 import * as THREE from 'three';
-import { commands, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
+import { commands, type BoneInfo, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
-import type { Fixture, Palette } from './fixtures';
+import type { Fixture, ItemPart, Palette } from './fixtures';
 
 const DEG = Math.PI / 180;
 const FOV = 10;
@@ -84,37 +84,7 @@ export class Cell {
 		this.item = null;
 
 		this.aspect = fx.aspect;
-		const model = new THREE.Group();
-		for (const part of [{ geometry: fx.geometry, material: fx.material }, ...(fx.parts ?? [])]) {
-			const res = await commands.loadModel(part.geometry);
-			if (res.status !== 'ok') throw new Error(res.error);
-			const info = res.data;
-			const mtlPath = part.material ?? fx.material ?? info.material;
-			const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
-			log.push(`${part.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
-			log.push(`  material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
-			model.add(await buildModel(info, mtl?.submaterials ?? [], log, fx.palette));
-		}
-		if (fx.skeleton && fx.attachments?.length) {
-			const bones = await commands.loadSkeleton(fx.skeleton);
-			if (bones.status !== 'ok') throw new Error(bones.error);
-			for (const at of fx.attachments) {
-				const bone = bones.data.find((b) => b.name.toLowerCase() === at.bone.toLowerCase());
-				if (!bone) {
-					log.push(`attachment ${at.geometry.split('/').pop()}: no bone ${at.bone}`);
-					continue;
-				}
-				const res = await commands.loadModel(at.geometry);
-				if (res.status !== 'ok') throw new Error(res.error);
-				const mtlPath = at.material ?? res.data.material;
-				const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
-				const part = await buildModel(res.data, mtl?.submaterials ?? [], log, at.palette);
-				part.position.set(...bone.position);
-				part.quaternion.set(...bone.rotation);
-				model.add(part);
-				log.push(`attachment ${at.geometry.split('/').pop()} on ${bone.name}`);
-			}
-		}
+		const model = await buildItem(fx, log);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -204,6 +174,55 @@ function visibleBounds(root: THREE.Object3D): THREE.Box3 {
 		}
 	});
 	return box;
+}
+
+/**
+ * An item and, recursively, what is attached to it. Each attachment hangs on
+ * a bone of the item's skeleton or, failing that, a node of its geometry
+ * (a .cga helper); it is drawn with its own palette, not its parent's.
+ */
+async function buildItem(item: ItemPart, log: string[], depth = 0): Promise<THREE.Group> {
+	const pad = '  '.repeat(depth);
+	const group = new THREE.Group();
+	for (const part of [{ geometry: item.geometry, material: item.material }, ...(item.parts ?? [])]) {
+		const res = await commands.loadModel(part.geometry);
+		if (res.status !== 'ok') throw new Error(res.error);
+		const info = res.data;
+		const mtlPath = part.material ?? item.material ?? info.material;
+		const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
+		log.push(`${pad}${part.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
+		log.push(`${pad}  material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
+		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette));
+	}
+	if (!item.attachments?.length) return group;
+	let bones: BoneInfo[] = [];
+	if (item.skeleton) {
+		const res = await commands.loadSkeleton(item.skeleton);
+		if (res.status !== 'ok') throw new Error(res.error);
+		bones = res.data;
+	}
+	for (const at of item.attachments) {
+		const name = at.bone.toLowerCase();
+		const bone = bones.find((b) => b.name.toLowerCase() === name);
+		let anchor: THREE.Object3D | undefined;
+		if (bone) {
+			anchor = new THREE.Object3D();
+			anchor.position.set(...bone.position);
+			anchor.quaternion.set(...bone.rotation);
+			group.add(anchor);
+		} else {
+			group.traverse((o) => {
+				if (!anchor && !(o as THREE.Mesh).isMesh && o.name.toLowerCase() === name) anchor = o;
+			});
+		}
+		if (!anchor) {
+			log.push(`${pad}attachment ${at.geometry.split('/').pop()}: no bone or node ${at.bone}`);
+			continue;
+		}
+		log.push(`${pad}attachment on ${at.bone} (${bone ? 'bone' : 'node'}):`);
+		anchor.add(await buildItem(at, log, depth + 1));
+	}
+	return group;
 }
 
 async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette) {
