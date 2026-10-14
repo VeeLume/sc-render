@@ -6,6 +6,7 @@
 //! cargo run -p render-assets --release --example scene_probe -- <record name>...
 //! cargo run -p render-assets --release --example scene_probe -- --inventory <inventory.json> <filter>
 //! cargo run -p render-assets --release --example scene_probe -- --coverage
+//! cargo run -p render-assets --release --example scene_probe -- --search <words>...
 //! ```
 
 use render_assets::{Assets, Body, Catalog, ChildSpec, InventoryNode};
@@ -87,6 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         notes.sort_by_key(|n| std::cmp::Reverse(n.1));
         for (k, n) in notes.iter().take(15) {
             println!("  {n:6}  {k}");
+        }
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("--search") {
+        for h in catalog.search(&args[1..].join(" "), 200) {
+            println!("{:40} {:50} {}", h.label, h.record, h.kind);
         }
         return Ok(());
     }

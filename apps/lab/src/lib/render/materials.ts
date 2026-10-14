@@ -285,7 +285,7 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 	const fallback: ResolvedLayer = {
 		diff: null,
 		normalGloss: null,
-		color: new THREE.Color(0.5, 0.5, 0.5),
+		color: new THREE.Color(1, 1, 1),
 		f0: new THREE.Color(0.04, 0.04, 0.04),
 		gloss: 0.5,
 		tiling: 1,
@@ -325,11 +325,15 @@ const BLACK = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
 BLACK.needsUpdate = true;
 
 async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.Material> {
-	const bases = s.layers.filter((l) => l.name.startsWith('BaseLayer')).slice(0, 4);
-	const layers = await Promise.all((bases.length ? bases : s.layers.slice(0, 1)).map((l) => resolveLayer(l, palette)));
-	if (!layers.length) layers.push(await resolveLayer(undefined, palette));
+	// Layers sit in the slot their name gives (BaseLayer1-4); a slot no layer
+	// names holds a neutral white layer (the Horizon helmet's parts material
+	// names two; its blend-map black, slot 4, is white paint in game).
+	const named = [1, 2, 3, 4].map((n) => s.layers.find((l) => l.name === `BaseLayer${n}`));
+	if (!named.some(Boolean)) named[0] = s.layers[0];
+	const neutral = await resolveLayer(undefined, palette);
+	const layers = await Promise.all(named.map((l) => (l ? resolveLayer(l, palette) : undefined)));
 	const blendSlot = s.features.includes('BLEND_MAP') ? slot(s, 'TexSlot12') : undefined;
-	const blend = blendSlot && layers.length > 1 ? await fetchTexture(blendSlot.file, 'mask') : null;
+	const blend = blendSlot ? await fetchTexture(blendSlot.file, 'mask') : null;
 	const decalSlot =
 		s.features.includes('DECALS') && !s.features.includes('WEAR_DIRT_AO_VERTEX') ? slot(s, 'TexSlot9') : undefined;
 	const decal = decalSlot ? await fetchTexture(decalSlot.file, 'color') : null;
@@ -342,11 +346,12 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 	const halSlot = slot(s, 'TexSlot13');
 	const hal = halSlot ? await fetchTexture(halSlot.file, 'mask') : null;
 	const hueLut = hal ? await fetchHueLut() : null;
-	// Slots: the base drawn where the blend map is black (the last layer),
-	// then the layers the map's R, G, B channels mix in (layers 1, 2, 3).
-	const base = layers[layers.length - 1];
-	const byChannel = [0, 1, 2].map((i) => (i < layers.length - 1 ? layers[i] : undefined));
-	const slot4 = [base, ...byChannel.map((l) => l ?? base)];
+	// Shader slots: the base drawn where the blend map is black (layer 4),
+	// then the layers its R, G, B channels mix in (layers 1, 2, 3). Without a
+	// blend map, layer 1 covers everything.
+	const base = (blend ? layers[3] : (layers[0] ?? layers.find(Boolean))) ?? neutral;
+	const byChannel = blend ? [0, 1, 2].map((i) => layers[i] ?? neutral) : [neutral, neutral, neutral];
+	const slot4 = [base, ...byChannel];
 	const pad = (i: number) => slot4[i];
 
 	const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
@@ -382,8 +387,8 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 			uL2NG: { value: pad(2).normalGloss ?? FLAT_GLOSS },
 			uL3NG: { value: pad(3).normalGloss ?? FLAT_GLOSS },
 			uBlend: { value: blend ?? BLACK },
-			// Channel weights (R, G, B); zero where that channel's layer is missing.
-			uBlendWeights: { value: new THREE.Vector3(...byChannel.map((l) => (blend && l ? 1 : 0))) },
+			// Channel weights (R, G, B): all off without a blend map.
+			uBlendWeights: { value: new THREE.Vector3(...[1, 1, 1].map((w) => (blend ? w : 0))) },
 			uBlendTile: { value: Number(param('BlendMapTiling') ?? 1) || 1 },
 			// Per-layer values as separate uniforms (no uniform arrays).
 			...Object.fromEntries(
