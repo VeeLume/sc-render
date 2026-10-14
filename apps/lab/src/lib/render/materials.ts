@@ -39,11 +39,13 @@ function slot(s: SubMaterialInfo, name: string) {
 const isNormal = (file: string) => /_ddna?\./i.test(file) || /_ddna?$/i.test(file);
 const hasGloss = (file: string) => /_ddna\./i.test(file);
 
-/** Dielectric below ~0.2 F0, metal above ~0.7; linear between. */
-function metalness(spec: [number, number, number]): number {
-	const f0 = Math.max(...spec);
-	return THREE.MathUtils.clamp((f0 - 0.2) / 0.5, 0, 1);
-}
+/**
+ * CryEngine's specular/gloss workflow: diffuse at full strength, `Specular`
+ * is F0. Patch three's physical shader so F0 is that colour (times the
+ * optional specular map) instead of the IOR-derived 0.04; metalness stays 0.
+ */
+const F0_LINE =
+	'material.specularColor = min( pow2( ( material.ior - 1.0 ) / ( material.ior + 1.0 ) ) * specularColorFactor, vec3( 1.0 ) ) * specularIntensityFactor;';
 
 function color(c: [number, number, number]): THREE.Color {
 	return new THREE.Color().setRGB(c[0], c[1], c[2]);
@@ -56,25 +58,10 @@ export async function buildMaterial(s: SubMaterialInfo): Promise<THREE.Material 
 	return illum(s);
 }
 
-function glossPatch(m: THREE.MeshStandardMaterial, glossMul: number, hasMap: boolean) {
-	m.onBeforeCompile = (shader) => {
-		shader.uniforms.uGlossMul = { value: glossMul };
-		shader.fragmentShader = shader.fragmentShader
-			.replace('#include <common>', '#include <common>\nuniform float uGlossMul;')
-			.replace(
-				'#include <roughnessmap_fragment>',
-				hasMap
-					? 'float roughnessFactor = 1.0 - texture2D( roughnessMap, vRoughnessMapUv ).g * uGlossMul;'
-					: 'float roughnessFactor = 1.0 - uGlossMul;'
-			);
-	};
-}
-
 async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
-	const metal = metalness(s.specular);
-	const m = new THREE.MeshStandardMaterial({
-		color: color(s.diffuse).lerp(color(s.specular), metal),
-		metalness: metal,
+	const m = new THREE.MeshPhysicalMaterial({
+		color: color(s.diffuse),
+		metalness: 0,
 		roughness: 1,
 		side: THREE.FrontSide
 	});
@@ -86,7 +73,30 @@ async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
 		m.normalScale.set(1, -1);
 		if (hasGloss(nrm.file)) m.roughnessMap = await fetchTexture(nrm.file, 'gloss');
 	}
-	glossPatch(m, s.shininess / 255, !!m.roughnessMap);
+	const specSlot = s.features.includes('SPECULAR_MAP') ? slot(s, 'TexSlot4') : undefined;
+	const specMap = specSlot && m.map ? await fetchTexture(specSlot.file, 'color') : null;
+	const hasGlossMap = !!m.roughnessMap;
+	m.onBeforeCompile = (shader) => {
+		Object.assign(shader.uniforms, {
+			uGlossMul: { value: s.shininess / 255 },
+			uF0: { value: color(s.specular) },
+			uSpecMap: { value: specMap }
+		});
+		shader.fragmentShader = shader.fragmentShader
+			.replace('#include <common>', '#include <common>\nuniform float uGlossMul;\nuniform vec3 uF0;\nuniform sampler2D uSpecMap;')
+			.replace(
+				'#include <roughnessmap_fragment>',
+				hasGlossMap
+					? 'float roughnessFactor = 1.0 - texture2D( roughnessMap, vRoughnessMapUv ).g * uGlossMul;'
+					: 'float roughnessFactor = 1.0 - uGlossMul;'
+			)
+			.replace(
+				F0_LINE,
+				specMap
+					? 'material.specularColor = uF0 * texture2D( uSpecMap, vMapUv ).rgb;'
+					: 'material.specularColor = uF0;'
+			);
+	};
 	if (s.features.includes('DECAL')) {
 		m.transparent = true;
 		m.depthWrite = false;
@@ -107,7 +117,7 @@ interface ResolvedLayer {
 	nrm: THREE.Texture | null;
 	gloss: THREE.Texture | null;
 	color: THREE.Color;
-	metal: number;
+	f0: THREE.Color;
 	glossMul: number;
 	tiling: number;
 }
@@ -118,7 +128,7 @@ async function resolveLayer(l: LayerInfo | undefined): Promise<ResolvedLayer> {
 		nrm: null,
 		gloss: null,
 		color: new THREE.Color(0.5, 0.5, 0.5),
-		metal: 0,
+		f0: new THREE.Color(0.04, 0.04, 0.04),
 		glossMul: 0.5,
 		tiling: 1
 	};
@@ -126,15 +136,14 @@ async function resolveLayer(l: LayerInfo | undefined): Promise<ResolvedLayer> {
 	const mtl = await loadMaterial(l.path);
 	const sub = mtl?.submaterials.find((s) => s.name === l.submaterial) ?? mtl?.submaterials[0];
 	if (!sub) return { ...fallback, color: color(l.tint) };
-	const metal = metalness(sub.specular);
 	const diffSlot = slot(sub, 'TexSlot1');
 	const nrmSlot = slot(sub, 'TexSlot2');
 	return {
 		diff: diffSlot ? await fetchTexture(diffSlot.file, 'color') : null,
 		nrm: nrmSlot ? await fetchTexture(nrmSlot.file, 'normal') : null,
 		gloss: nrmSlot && hasGloss(nrmSlot.file) ? await fetchTexture(nrmSlot.file, 'gloss') : null,
-		color: (metal > 0.5 ? color(sub.specular) : color(sub.diffuse)).multiply(color(l.tint)),
-		metal,
+		color: color(sub.diffuse).multiply(color(l.tint)),
+		f0: color(sub.specular),
 		glossMul: (sub.shininess / 255) * l.gloss_mult,
 		tiling: l.uv_tiling || 1
 	};
@@ -155,7 +164,7 @@ async function layerBlend(s: SubMaterialInfo): Promise<THREE.Material> {
 	const macroSlot = [slot(s, 'TexSlot3'), slot(s, 'TexSlot2')].find((t) => t && isNormal(t.file));
 	const macro = macroSlot ? await fetchTexture(macroSlot.file, 'normal') : null;
 
-	const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
+	const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
 	// Any texture enables the UV varying (vMapUv) and the tangent-space normal path.
 	m.map = base.diff ?? WHITE;
 	m.normalMap = base.nrm ?? FLAT;
@@ -176,16 +185,16 @@ async function layerBlend(s: SubMaterialInfo): Promise<THREE.Material> {
 			uWearTile: { value: wear.tiling },
 			uBaseGlossMul: { value: base.glossMul },
 			uWearGlossMul: { value: wear.glossMul },
-			uBaseMetal: { value: base.metal },
-			uWearMetal: { value: wear.metal }
+			uBaseF0: { value: base.f0 },
+			uWearF0: { value: wear.f0 }
 		});
 		shader.fragmentShader = shader.fragmentShader
 			.replace(
 				'#include <common>',
 				`#include <common>
 uniform sampler2D uBaseDiff, uWearDiff, uBaseNrm, uWearNrm, uBaseGloss, uWearGloss, uWearMask, uMacroNrm;
-uniform vec3 uBaseColor, uWearColor;
-uniform float uBaseTile, uWearTile, uBaseGlossMul, uWearGlossMul, uBaseMetal, uWearMetal;
+uniform vec3 uBaseColor, uWearColor, uBaseF0, uWearF0;
+uniform float uBaseTile, uWearTile, uBaseGlossMul, uWearGlossMul;
 float wearF;`
 			)
 			.replace(
@@ -202,7 +211,7 @@ diffuseColor.rgb *= mix( cBase, cWear, wearF );`
 	texture2D( uWearGloss, vMapUv * uWearTile ).g * uWearGlossMul,
 	wearF );`
 			)
-			.replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix( uBaseMetal, uWearMetal, wearF );')
+			.replace(F0_LINE, 'material.specularColor = mix( uBaseF0, uWearF0, wearF );')
 			.replace(
 				'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
 				`vec3 nLayer = normalize( mix(

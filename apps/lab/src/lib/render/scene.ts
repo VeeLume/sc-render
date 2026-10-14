@@ -12,13 +12,39 @@ import type { Fixture } from './fixtures';
 
 const DEG = Math.PI / 180;
 const FOV = 10;
+/**
+ * The item's share of the cell. The widget data says 70% (ItemModel sizing);
+ * measured against in-game cells the PIPS can (upright, shallow, so only this
+ * factor matters) fills ~66%, and with 0.66 the JS-400 (depth-limited) lands
+ * within ~7%. The extra margin may be the item window's own inset; the depth
+ * reference (taken = cell height) is not stated in the data.
+ */
+const FIT = 0.66;
 /** Cryengine Ang3 → matrix Rz·Ry·Rx, which three calls order 'ZYX'. */
 const ang3 = (d: [number, number, number]) => new THREE.Euler(d[0] * DEG, d[1] * DEG, d[2] * DEG, 'ZYX');
 
+export type ToneMap = 'agx' | 'neutral' | 'aces' | 'linear';
+
+/**
+ * Calibrated against in-game cells (JS-400, PIPS can): linear tone mapping
+ * (the game does not compress highlights like AgX), rig intensity x 2.5,
+ * ambient 0.15 (the shadow sides stay dark in game; brightness comes from the
+ * key light, not ambient).
+ */
 export interface CellOptions {
 	lightScale: number;
 	ambient: number;
+	toneMap?: ToneMap;
+	/** Extra factor on the rig's rim light (tuning aid). */
+	rimScale?: number;
 }
+
+const TONE_MAPS: Record<ToneMap, THREE.ToneMapping> = {
+	agx: THREE.AgXToneMapping,
+	neutral: THREE.NeutralToneMapping,
+	aces: THREE.ACESFilmicToneMapping,
+	linear: THREE.LinearToneMapping
+};
 
 export class Cell {
 	readonly renderer: THREE.WebGLRenderer;
@@ -34,7 +60,7 @@ export class Cell {
 	) {
 		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-		this.renderer.toneMapping = THREE.AgXToneMapping;
+		this.renderer.toneMapping = THREE.LinearToneMapping;
 		this.renderer.shadowMap.enabled = true;
 		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 		this.camera = new THREE.PerspectiveCamera(FOV, aspect, 0.1, 100);
@@ -77,8 +103,14 @@ export class Cell {
 		const box = visibleBounds(pivot);
 		const size = box.getSize(new THREE.Vector3());
 		const centre = box.getCenter(new THREE.Vector3());
-		// ItemModel sizing: 70% of the cell's width, height and depth (depth = height).
-		const s = 0.7 * Math.min(this.aspect / size.x, 1 / size.y, 1 / size.z);
+		// ItemModel sizing: a share of the cell's width, height and depth (depth = height).
+		const s = FIT * Math.min(this.aspect / size.x, 1 / size.y, 1 / size.z);
+		rot.rotation.set(0, 0, 0);
+		pivot.updateMatrixWorld(true);
+		const local = visibleBounds(pivot).getSize(new THREE.Vector3());
+		rot.rotation.copy(ang3([90 + fx.offset[0], fx.offset[1], fx.offset[2]]));
+		const f = (v: THREE.Vector3) => `${v.x.toFixed(3)} ${v.y.toFixed(3)} ${v.z.toFixed(3)}`;
+		log.push(`extents rotated ${f(size)} | unrotated ${f(local)} | scale ${s.toFixed(4)}`);
 		pivot.scale.setScalar(s);
 		pivot.position.copy(centre).multiplyScalar(-s);
 		pivot.traverse((o) => {
@@ -100,7 +132,7 @@ export class Cell {
 		for (const l of fx.rig) {
 			const spot = new THREE.SpotLight(
 				new THREE.Color(...l.color),
-				l.intensity * opts.lightScale,
+				l.intensity * opts.lightScale * (l.name === 'rim' ? (opts.rimScale ?? 1) : 1),
 				l.radius,
 				(l.fov / 2) * DEG,
 				0.75,
@@ -121,6 +153,7 @@ export class Cell {
 		this.scene.add(group);
 		this.lights.push(group);
 		this.ambient.intensity = opts.ambient;
+		this.renderer.toneMapping = TONE_MAPS[opts.toneMap ?? 'linear'];
 	}
 
 	render() {

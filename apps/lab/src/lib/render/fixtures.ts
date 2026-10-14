@@ -37,6 +37,14 @@ const MASTER_RIG: RigLight[] = [
 
 export const FIXTURES: Fixture[] = [
 	{
+		id: 'js400',
+		label: 'A&R JS-400 (power plant)',
+		geometry: 'objects/spaceships/power_plants/medium_component/amrs/powr_amrs_s02_pl01.cga',
+		offset: [20, 45, 17],
+		rig: MASTER_RIG,
+		aspect: 1
+	},
+	{
 		id: 'regulus',
 		label: 'Aegis Regulus (power plant)',
 		geometry: 'objects/spaceships/power_plants/small_component/aegs/powr_aegs_s01_pl03.cga',

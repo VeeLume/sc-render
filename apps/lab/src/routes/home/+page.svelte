@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { FIXTURES, type Fixture } from '$lib/render/fixtures';
-	import { Cell } from '$lib/render/scene';
+	import { Cell, type ToneMap } from '$lib/render/scene';
 	import { commands } from '$lib/bindings';
 
 	let canvas: HTMLCanvasElement;
@@ -10,17 +10,20 @@
 	let log = $state<string[]>([]);
 	let busy = $state(false);
 	let error = $state<string | null>(null);
-	let lightScale = $state(1);
-	let ambient = $state(0.05);
+	let lightScale = $state(2.5);
+	let ambient = $state(0.15);
+	let toneMap = $state<ToneMap>('linear');
+	let rimScale = $state(1);
 
-	async function show(fx: Fixture) {
+	async function show(fx: Fixture, name = fx.id) {
 		current = fx;
 		if (!cell) return;
 		busy = true;
 		error = null;
 		try {
-			log = await cell.show(fx, { lightScale, ambient });
-			await snapshot(fx.id);
+			log = await cell.show(fx, { lightScale, ambient, toneMap, rimScale });
+			await snapshot(name);
+			await commands.saveLog(name, log.join('\n'));
 		} catch (e) {
 			error = String(e);
 		} finally {
@@ -39,7 +42,7 @@
 
 	function relight() {
 		if (!cell) return;
-		cell.setLights(current, { lightScale, ambient });
+		cell.setLights(current, { lightScale, ambient, toneMap, rimScale });
 		cell.render();
 	}
 

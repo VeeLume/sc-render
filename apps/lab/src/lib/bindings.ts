@@ -51,6 +51,17 @@ async saveSnapshot(name: string, png: number[]) : Promise<Result<string, string>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Save a render log next to the snapshots as `<name>.txt`.
+ */
+async saveLog(name: string, text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_log", { name, text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
