@@ -5,6 +5,7 @@
 // fitted to 70% of the cell's width, height and depth, lit by its category's
 // light group (rotated (90,180,0), projectors along local +X).
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { commands, type BoneInfo, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
@@ -37,6 +38,13 @@ export interface CellOptions {
 	toneMap?: ToneMap;
 	/** Extra factor on the rig's rim light (tuning aid). */
 	rimScale?: number;
+	/**
+	 * Strength of a neutral studio environment for reflections. The light
+	 * groups name `cm_inventory_probe_cm` but switch it off (and it decodes
+	 * mostly black with magenta blobs), yet in-game metal shows a grey sheen,
+	 * so some reflection reaches the items; this stands in for it. 0 = off.
+	 */
+	env?: number;
 }
 
 const TONE_MAPS: Record<ToneMap, THREE.ToneMapping> = {
@@ -53,6 +61,7 @@ export class Cell {
 	private item: THREE.Object3D | null = null;
 	private lights: THREE.Object3D[] = [];
 	private ambient = new THREE.AmbientLight(0x9aa6b8, 0.05);
+	private envMap: THREE.Texture | null = null;
 
 	/** Cell width / height; set per item in `show`. */
 	aspect = 1;
@@ -69,6 +78,9 @@ export class Cell {
 		this.camera.up.set(0, -1, 0);
 		this.camera.lookAt(0, 0, 0);
 		this.scene.add(this.ambient);
+		const pmrem = new THREE.PMREMGenerator(this.renderer);
+		this.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+		pmrem.dispose();
 	}
 
 	resize(width: number, height: number) {
@@ -139,13 +151,15 @@ export class Cell {
 			spot.target.position.set(1, 0, 0);
 			holder.add(spot.target);
 			spot.castShadow = l.name !== 'fill';
-			spot.shadow.mapSize.set(1024, 1024);
+			spot.shadow.mapSize.set(2048, 2048);
 			spot.shadow.bias = -0.0005;
 			group.add(holder);
 		}
 		this.scene.add(group);
 		this.lights.push(group);
 		this.ambient.intensity = opts.ambient;
+		this.scene.environment = opts.env ? this.envMap : null;
+		this.scene.environmentIntensity = opts.env ?? 0;
 		this.renderer.toneMapping = TONE_MAPS[opts.toneMap ?? 'linear'];
 	}
 

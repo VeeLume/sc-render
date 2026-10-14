@@ -24,9 +24,11 @@ import type { Palette } from './fixtures';
 const NO_DRAW = new Set(['NoDraw']);
 
 /**
- * Global wear strength. Wear factor = TexSlot11 mask x WearBlendBase x this
- * (StarBreaker addon's wear input group). An item's real wear is runtime
- * state; 0 renders it pristine, which is how new items show in game.
+ * Global wear strength. Wear factor = (1 - TexSlot11 mask) x WearBlendBase x
+ * this. The mask is white where the paint is intact: read directly, the
+ * Star Kitten's pink paint turns to its bare-metal wear layer, inverted only
+ * edges and crevices wear. An item's real wear is runtime state; 0 renders
+ * it pristine, which is how new items show in game.
  */
 export const wearSettings = { strength: 0 };
 
@@ -252,7 +254,7 @@ float decalA;`
 			)
 			.replace(
 				'#include <map_fragment>',
-				`wearF = clamp( texture2D( uWearMask, vMapUv ).r * uWearAmount, 0.0, 1.0 );
+				`wearF = clamp( ( 1.0 - texture2D( uWearMask, vMapUv ).r ) * uWearAmount, 0.0, 1.0 );
 vec3 cBase = texture2D( uBaseDiff, vMapUv * uBaseTile ).rgb * uBaseColor;
 vec3 cWear = texture2D( uWearDiff, vMapUv * uWearTile ).rgb * uWearColor;
 diffuseColor.rgb *= mix( cBase, cWear, wearF );

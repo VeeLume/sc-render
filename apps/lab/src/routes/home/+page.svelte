@@ -14,6 +14,7 @@
 	let ambient = $state(0.15);
 	let toneMap = $state<ToneMap>('linear');
 	let rimScale = $state(1);
+	let env = $state(0);
 
 	/** Canvas sized to the item's cell (width / height = aspect). */
 	function fit() {
@@ -30,7 +31,7 @@
 		busy = true;
 		error = null;
 		try {
-			log = await cell.show(fx, { lightScale, ambient, toneMap, rimScale });
+			log = await cell.show(fx, { lightScale, ambient, toneMap, rimScale, env });
 			await snapshot(name);
 			await commands.saveLog(name, log.join('\n'));
 		} catch (e) {
@@ -51,7 +52,7 @@
 
 	function relight() {
 		if (!cell) return;
-		cell.setLights(current, { lightScale, ambient, toneMap, rimScale });
+		cell.setLights(current, { lightScale, ambient, toneMap, rimScale, env });
 		cell.render();
 	}
 
@@ -87,6 +88,10 @@
 			<label class="block"
 				>Ambient {ambient.toFixed(3)}
 				<input type="range" min="0" max="1" step="0.005" bind:value={ambient} oninput={relight} class="w-full" />
+			</label>
+			<label class="block"
+				>Reflections {env.toFixed(2)}
+				<input type="range" min="0" max="2" step="0.05" bind:value={env} oninput={relight} class="w-full" />
 			</label>
 		</div>
 	</aside>

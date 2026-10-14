@@ -187,9 +187,21 @@ const HDGW_RIFLE: ItemPart = {
 	palette: HDGW_GREY_BROWN_BLACK
 };
 
-/** PlayerDeco_Gunrack_4P_3R_lowtech_1_a: Misc / Weapon -> the Misc UNDEFINED category, default rig. */
+/**
+ * tintpalettes/generic/gen_greylight_sunyellow_redbrown. The rack's geometry
+ * node names no palette; this one sits on the record's material node
+ * (SGeometryResourceParams.Material.Palette), which applies instead.
+ */
+const GEN_GREYLIGHT_SUNYELLOW_REDBROWN: Palette = [
+	{ tint: [153, 153, 153], spec: [59, 59, 59], gloss: 255 },
+	{ tint: [205, 119, 14], spec: [59, 59, 59], gloss: 255 },
+	{ tint: [181, 103, 77], spec: [59, 59, 59], gloss: 255 }
+];
+
+/** PlayerDeco_Gunrack_4P_3R_lowtech_1_a ("Bosco Weapon Display Rack"): Misc / Weapon -> the Misc UNDEFINED category, default rig. */
 const RACK = {
 	geometry: 'objects/buildingsets/human/lowtech/prop/gunrack/gunrack_1_a.cga',
+	palette: GEN_GREYLIGHT_SUNYELLOW_REDBROWN,
 	offset: [0, 155, 2.5] as [number, number, number],
 	rig: MASTER_RIG,
 	aspect: 1
@@ -197,10 +209,10 @@ const RACK = {
 
 export const FIXTURES: Fixture[] = [
 	{ id: 'p6lr', label: 'P6-LR (rack loadout)', ...P6LR, offset: [0, 125, 5], rig: WEAPONS_PRIMARY_RIG, aspect: 2 },
-	{ id: 'rack', label: 'Besco weapon rack', ...RACK },
+	{ id: 'rack', label: 'Bosco weapon rack', ...RACK },
 	{
 		id: 'rack_loaded',
-		label: 'Besco weapon rack (loaded)',
+		label: 'Bosco weapon rack (loaded)',
 		...RACK,
 		attachments: [
 			{ ...P6LR, bone: '$slot_rifle_1' },
