@@ -14,7 +14,7 @@
 	let ambient = $state(0.15);
 	let toneMap = $state<ToneMap>('linear');
 	let rimScale = $state(1);
-	let env = $state(1);
+	let env = $state(2);
 
 	/** Canvas sized to the item's cell (width / height = aspect). */
 	function fit() {

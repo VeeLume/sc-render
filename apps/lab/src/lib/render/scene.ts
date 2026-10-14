@@ -43,8 +43,10 @@ export interface CellOptions {
 	 * switch it off (and it decodes mostly black with magenta blobs), yet in
 	 * game glossy tops shine white (P6-LR) and dark metal shows a sheen on top
 	 * (power plants); this stands in for that. Reflection only (no diffuse
-	 * irradiance). 1 keeps the JS-400, P4-AR and PIPS as calibrated and lifts
-	 * the P6-LR's glossy tops; the game's P6-LR is brighter still. 0 = off.
+	 * irradiance). 2 (Valerie's pick) lifts glossy tops like the P6-LR's
+	 * while the JS-400, P4-AR and PIPS keep their colours; the game lights
+	 * items brighter still from the front and above, but recognisability
+	 * matters more than a 1:1 match. 0 = off.
 	 */
 	env?: number;
 }

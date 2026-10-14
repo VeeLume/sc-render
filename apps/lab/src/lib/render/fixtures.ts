@@ -199,14 +199,22 @@ const GEN_GREYLIGHT_SUNYELLOW_REDBROWN: Palette = [
 ];
 
 /**
+ * Pose for an item no PIT orientation entry matches. The game then applies no
+ * offset and shows a prop's back (the Bosco rack); we prefer a recognisable
+ * view: front three-quarter from slightly above, front lit by the key light.
+ * Props face away from the camera at offset 0, so the front is around yaw 180.
+ */
+export const FALLBACK_OFFSET: [number, number, number] = [-15, 205, 0];
+
+/**
  * PlayerDeco_Gunrack_4P_3R_lowtech_1_a ("Bosco Weapon Display Rack"): Misc /
- * Weapon matches no PIT orientation entry, so no offset; the game's cell shows
- * the rack's back (checked against Valerie's screenshot). Default rig.
+ * Weapon matches no PIT orientation entry (both Misc UNDEFINED entries need a
+ * tag), so the fallback pose. Default rig.
  */
 const RACK = {
 	geometry: 'objects/buildingsets/human/lowtech/prop/gunrack/gunrack_1_a.cga',
 	palette: GEN_GREYLIGHT_SUNYELLOW_REDBROWN,
-	offset: [0, 0, 0] as [number, number, number],
+	offset: FALLBACK_OFFSET,
 	rig: MASTER_RIG,
 	aspect: 1
 };
