@@ -370,12 +370,13 @@ impl Catalog {
         };
         if look.geometry.to_ascii_lowercase().ends_with(".cdf") {
             let cdf = CharacterDefinition::read(assets.source(), &look.geometry)?;
-            // A skin's material override replaces the weapon's own material
-            // (the one most of its attachments use), not a part's own.
-            let own = most_common(cdf.attachments.iter().filter_map(|a| a.material.as_deref()));
+            // A skin's material override replaces the weapon's own material,
+            // not a part's own. The weapon's own parts carry a material from the .cdf's folder;
+            // a part from elsewhere (a cartridge from `ammo/`) keeps its own,
+            // as does a part without one (its geometry's MtlName).
+            let folder = parent_folder(&look.geometry);
             let material = |m: &Option<String>| match (&look.material, m) {
-                (Some(skin), None) => Some(skin.clone()),
-                (Some(skin), Some(m)) if Some(m.as_str()) == own => Some(skin.clone()),
+                (Some(skin), Some(m)) if parent_folder(m) == folder => Some(skin.clone()),
                 _ => m.clone(),
             };
             if cdf.model.to_ascii_lowercase().ends_with(".chr") {
@@ -570,10 +571,10 @@ fn ang3_quaternion([x, y, z]: [f32; 3]) -> [f32; 4] {
     ]
 }
 
-fn most_common<'a>(values: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for v in values {
-        *counts.entry(v).or_default() += 1;
-    }
-    counts.into_iter().max_by_key(|(_, n)| *n).map(|(v, _)| v)
+/// A p4k path's folder, lower-cased, without a `Data/` prefix.
+fn parent_folder(path: &str) -> String {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    let p = p.strip_prefix("data/").unwrap_or(&p);
+    p.rsplit_once('/')
+        .map_or(String::new(), |(dir, _)| dir.to_string())
 }

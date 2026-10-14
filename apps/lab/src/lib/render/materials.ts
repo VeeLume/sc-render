@@ -13,11 +13,12 @@
 //                  it casts no shadow. Thin film, dirt and glare not modelled.
 //   LayerBlend_V2  Up to four MatLayers BaseLayer1-4 (each a `Layer` .mtl with
 //                  TexSlot1 diffuse, TexSlot2 ddna), with BLEND_MAP chosen per
-//                  pixel by TexSlot12: near-exclusive masks, G for layer 2, R
-//                  for layer 3, B for layer 4, layer 1 where all are black
-//                  (fitted: Horizon helmet frame R -> white paint layer 3, Big
-//                  Bite teeth G -> white palette-C layer 2, shell B -> olive
-//                  layer 4; R -> 2 made the frame gold and the teeth green).
+//                  pixel by TexSlot12: near-exclusive masks over a base of
+//                  layer 3, R mixing in layer 1, G layer 2, B layer 4 (with
+//                  fewer than three layers the base is layer 1). Fitted to
+//                  in-game shots of the Big Bite helmet: shell B -> olive 4,
+//                  camo and face mask black -> dark 3, stripe and mask
+//                  markers R -> red 1, teeth G -> white 2.
 //                  TexSlot3 macro normal; layer textures tiled by the layer's
 //                  UVTiling. A layer with PaletteTint 1-3 takes the tint
 //                  palette's entry A-C: colour multiplied in, its spec as F0
@@ -247,14 +248,20 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 	const decalSpec = (param('DiffuseDecalSpec') ?? '0.04,0.04,0.04').split(',').map(Number) as [number, number, number];
 	const macroSlot = [slot(s, 'TexSlot3'), slot(s, 'TexSlot2')].find((t) => t && isNormal(t.file));
 	const macro = macroSlot ? await fetchTexture(macroSlot.file, 'normal') : null;
-	const pad = (i: number) => layers[Math.min(i, layers.length - 1)];
+	// Slots: the base drawn where the blend map is black, then the layers the
+	// map's R, G, B channels mix in. With three or more layers the base is
+	// layer 3 and R, G, B pick layers 1, 2, 4; with fewer it is layer 1.
+	const base = layers.length >= 3 ? layers[2] : layers[0];
+	const byChannel = layers.length >= 3 ? [layers[0], layers[1], layers[3]] : [undefined, layers[1], undefined];
+	const slot4 = [base, ...byChannel.map((l) => l ?? base)];
+	const pad = (i: number) => slot4[i];
 
 	const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
 	// Layer 1 rides on three's own samplers (map, normalMap); they also turn
 	// on the UV varying and the tangent-space normal path. WebView2 allows 16
 	// samplers per shader, and shadows and the environment take three.
-	m.map = layers[0].diff ?? WHITE;
-	m.normalMap = layers[0].normalGloss ?? FLAT_GLOSS;
+	m.map = base.diff ?? WHITE;
+	m.normalMap = base.normalGloss ?? FLAT_GLOSS;
 	m.normalScale.set(1, -1);
 	m.onBeforeCompile = (shader) => {
 		Object.assign(shader.uniforms, {
@@ -265,8 +272,8 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 			uL2NG: { value: pad(2).normalGloss ?? FLAT_GLOSS },
 			uL3NG: { value: pad(3).normalGloss ?? FLAT_GLOSS },
 			uBlend: { value: blend ?? BLACK },
-			// Channel weights (R, G, B) for layers 3, 2, 4; zero where the layer is missing.
-			uBlendWeights: { value: new THREE.Vector3(...[2, 1, 3].map((i) => (blend && i < layers.length ? 1 : 0))) },
+			// Channel weights (R, G, B); zero where that channel's layer is missing.
+			uBlendWeights: { value: new THREE.Vector3(...byChannel.map((l) => (blend && l ? 1 : 0))) },
 			uBlendTile: { value: Number(param('BlendMapTiling') ?? 1) || 1 },
 			// Per-layer values as separate uniforms (no uniform arrays).
 			...Object.fromEntries(
@@ -337,8 +344,8 @@ vec3 bw = texture2D( uBlend, vMapUv * uBlendTile ).rgb * uBlendWeights;
 vec2 uv1 = vMapUv * uTile1;
 vec2 uv2 = vMapUv * uTile2;
 vec2 uv3 = vMapUv * uTile3;
-layerColor = blendLayer( layerColor, bw.g, texture2D( uL1Diff, uv1 ), texture2D( uL1NG, uv1 ), uColor1, uF01, uGlossMul1, uPalGloss1 );
-layerColor = blendLayer( layerColor, bw.r, texture2D( uL2Diff, uv2 ), texture2D( uL2NG, uv2 ), uColor2, uF02, uGlossMul2, uPalGloss2 );
+layerColor = blendLayer( layerColor, bw.r, texture2D( uL1Diff, uv1 ), texture2D( uL1NG, uv1 ), uColor1, uF01, uGlossMul1, uPalGloss1 );
+layerColor = blendLayer( layerColor, bw.g, texture2D( uL2Diff, uv2 ), texture2D( uL2NG, uv2 ), uColor2, uF02, uGlossMul2, uPalGloss2 );
 layerColor = blendLayer( layerColor, bw.b, texture2D( uL3Diff, uv3 ), texture2D( uL3NG, uv3 ), uColor3, uF03, uGlossMul3, uPalGloss3 );
 diffuseColor.rgb *= layerColor;
 float inDiffuse = step( 2.0, vDecalUv.x ) * ( 1.0 - step( 3.0, vDecalUv.x ) );
