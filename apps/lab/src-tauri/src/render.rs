@@ -22,7 +22,7 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    fn assets(&self) -> Result<Arc<Assets>, String> {
+    pub fn assets(&self) -> Result<Arc<Assets>, String> {
         if let Some(a) = self.assets.get() {
             return Ok(a.clone());
         }

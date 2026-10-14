@@ -5,10 +5,19 @@
 // fitted to 70% of the cell's width, height and depth, lit by its category's
 // light group (rotated (90,180,0), projectors along local +X).
 import * as THREE from 'three';
-import { commands, type BoneInfo, type ModelInfo, type SubMaterialInfo } from '$lib/bindings';
+import {
+	commands,
+	type BoneInfo,
+	type ModelInfo,
+	type SceneItem,
+	type ScenePaletteEntry,
+	type ScenePart,
+	type SubMaterialInfo
+} from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
-import type { Fixture, ItemPart, Palette } from './fixtures';
+/** A tint palette: entries A, B, C. */
+export type Palette = ScenePaletteEntry[];
 
 const DEG = Math.PI / 180;
 const FOV = 10;
@@ -94,13 +103,14 @@ export class Cell {
 		this.camera.updateProjectionMatrix();
 	}
 
-	async show(fx: Fixture, opts: CellOptions): Promise<string[]> {
+	async show(fx: SceneItem, opts: CellOptions): Promise<string[]> {
 		const log: string[] = [];
 		if (this.item) this.scene.remove(this.item);
 		this.item = null;
 
 		this.aspect = fx.aspect;
-		const model = await buildItem(fx, log);
+		for (const n of fx.notes) log.push(`note: ${n}`);
+		const model = await buildItem(fx.root, log);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -109,7 +119,7 @@ export class Cell {
 		// Viewing elevation: turns the posed item about the screen's horizontal
 		// axis, i.e. the camera looks from above without the item leaning.
 		const view = new THREE.Group();
-		view.rotation.x = (fx.elevation ?? 0) * DEG;
+		view.rotation.x = fx.elevation * DEG;
 		view.add(rot);
 		const pivot = new THREE.Group();
 		pivot.add(view);
@@ -138,7 +148,7 @@ export class Cell {
 		return log;
 	}
 
-	setLights(fx: Fixture, opts: CellOptions) {
+	setLights(fx: SceneItem, opts: CellOptions) {
 		for (const l of this.lights) this.scene.remove(l);
 		this.lights = [];
 		const group = new THREE.Group();
@@ -159,7 +169,7 @@ export class Cell {
 			spot.position.set(0, 0, 0);
 			spot.target.position.set(1, 0, 0);
 			holder.add(spot.target);
-			spot.castShadow = l.name !== 'fill';
+			spot.castShadow = l.casts_shadows;
 			spot.shadow.mapSize.set(2048, 2048);
 			spot.shadow.bias = -0.0005;
 			group.add(holder);
@@ -227,20 +237,21 @@ function visibleBounds(root: THREE.Object3D): THREE.Box3 {
  * a bone of the item's skeleton or, failing that, a node of its geometry
  * (a .cga helper); it is drawn with its own palette, not its parent's.
  */
-async function buildItem(item: ItemPart, log: string[], depth = 0): Promise<THREE.Group> {
+async function buildItem(item: ScenePart, log: string[], depth = 0): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
+	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
-	for (const part of [{ geometry: item.geometry, material: item.material }, ...(item.parts ?? [])]) {
-		const res = await commands.loadModel(part.geometry);
+	for (const piece of item.pieces) {
+		const res = await commands.loadModel(piece.geometry);
 		if (res.status !== 'ok') throw new Error(res.error);
 		const info = res.data;
-		const mtlPath = part.material ?? item.material ?? info.material;
+		const mtlPath = piece.material ?? info.material;
 		const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
-		log.push(`${pad}${part.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
-		log.push(`${pad}  material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
-		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette));
+		log.push(`${pad}  ${piece.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
+		log.push(`${pad}    material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
+		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined));
 	}
-	if (!item.attachments?.length) return group;
+	if (!item.attachments.length) return group;
 	let bones: BoneInfo[] = [];
 	if (item.skeleton) {
 		const res = await commands.loadSkeleton(item.skeleton);
@@ -262,11 +273,11 @@ async function buildItem(item: ItemPart, log: string[], depth = 0): Promise<THRE
 			});
 		}
 		if (!anchor) {
-			log.push(`${pad}attachment ${at.geometry.split('/').pop()}: no bone or node ${at.bone}`);
+			log.push(`${pad}  ${at.part.record}: no bone or node ${at.bone}`);
 			continue;
 		}
-		log.push(`${pad}attachment on ${at.bone} (${bone ? 'bone' : 'node'}):`);
-		anchor.add(await buildItem(at, log, depth + 1));
+		log.push(`${pad}  on ${at.bone} (${bone ? 'bone' : 'node'}):`);
+		anchor.add(await buildItem(at.part, log, depth + 1));
 	}
 	return group;
 }

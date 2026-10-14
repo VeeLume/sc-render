@@ -73,6 +73,40 @@ async saveLog(name: string, text: string) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Items whose display or record name contains every word of `query`.
+ */
+async searchItems(query: string) : Promise<Result<ItemSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_items", { query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The render scene of an item; `children` replaces its default loadout.
+ */
+async itemScene(guid: string, children: ChildSpec[] | null) : Promise<Result<SceneItem, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("item_scene", { guid, children }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * A Starlume inventory dump, resolved; by default the dev build's
+ * `%APPDATA%/starlume-dev/dossier/inventory.json`.
+ */
+async loadInventory(path: string | null) : Promise<Result<InventoryNode[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_inventory", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -99,6 +133,30 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
  * Quaternion `(x, y, z, w)`.
  */
 rotation: [number, number, number, number] }
+/**
+ * An attached item, as an inventory dump reports it.
+ */
+export type ChildSpec = { port: string; guid: string; 
+/**
+ * `None`: the item's own default loadout.
+ */
+children: ChildSpec[] | null }
+/**
+ * One item of an inventory dump, resolved.
+ */
+export type InventoryNode = { geid: string; guid: string | null; label: string; 
+/**
+ * The port on the parent, by name.
+ */
+port: string | null; attached: InventoryNode[]; contents: InventoryNode[] }
+/**
+ * A search hit.
+ */
+export type ItemSummary = { guid: string; label: string; record: string; 
+/**
+ * `Type/SubType`.
+ */
+kind: string }
 export type LayerInfo = { name: string; path: string; submaterial: string; tint: [number, number, number]; wear_tint: [number, number, number]; gloss_mult: number; wear_gloss: number; uv_tiling: number; palette_tint: number }
 /**
  * A `.mtl` file as the renderer consumes it.
@@ -114,6 +172,58 @@ export type NodeInfo = { name: string; parent: number | null;
  * 3 × 4 row-major, relative to the parent.
  */
 transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
+export type SceneAttachment = { 
+/**
+ * Bone or geometry node.
+ */
+bone: string; part: ScenePart }
+/**
+ * An item to draw in one cell.
+ */
+export type SceneItem = { id: string; label: string; root: ScenePart; 
+/**
+ * Category orientation offset, degrees (on top of the default 90, 0, 0).
+ */
+offset: [number, number, number]; 
+/**
+ * Extra viewing elevation, degrees (the fallback pose only).
+ */
+elevation: number; rig: SceneLight[]; 
+/**
+ * Cell width / height.
+ */
+aspect: number; 
+/**
+ * What could not be resolved (shown in the log).
+ */
+notes: string[] }
+export type SceneLight = { name: string; pos: [number, number, number]; 
+/**
+ * `Ang3` degrees; projectors shine along local +X.
+ */
+rot: [number, number, number]; color: [number, number, number]; intensity: number; radius: number; fov: number; casts_shadows: boolean }
+/**
+ * A palette entry, sRGB bytes; gloss 0..=255.
+ */
+export type ScenePaletteEntry = { tint: [number, number, number]; spec: [number, number, number]; gloss: number }
+/**
+ * One item's geometry and what hangs on it.
+ */
+export type ScenePart = { record: string; 
+/**
+ * Drawn at the item origin.
+ */
+pieces: ScenePiece[]; 
+/**
+ * `.chr` whose bones the attachments name; without one they name
+ * geometry nodes of the pieces.
+ */
+skeleton: string | null; attachments: SceneAttachment[]; palette: [ScenePaletteEntry, ScenePaletteEntry, ScenePaletteEntry] | null }
+export type ScenePiece = { geometry: string; 
+/**
+ * `None`: the geometry's own `MtlName`.
+ */
+material: string | null }
 export type SubMaterialInfo = { name: string; shader: string; features: string[]; diffuse: [number, number, number]; specular: [number, number, number]; emissive: [number, number, number]; opacity: number; shininess: number; alpha_test: number; textures: TextureSlot[]; layers: LayerInfo[]; params: ([string, string])[] }
 export type SubmeshInfo = { material: number; node: number | null; first_index: number; index_count: number }
 export type TextureSlot = { slot: string; file: string; tiling: [number, number] }

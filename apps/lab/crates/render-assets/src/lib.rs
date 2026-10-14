@@ -6,9 +6,14 @@
 //! Nothing here ships game data: everything is read from the user's own
 //! `Data.p4k` at runtime.
 
+mod catalog;
 mod model;
 mod texture;
 
+pub use catalog::{
+    Catalog, ChildSpec, FALLBACK_ELEVATION, FALLBACK_OFFSET, InventoryNode, ItemSummary,
+    SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
+};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
 pub use texture::{Rgba, TextureKind};
 
@@ -26,6 +31,8 @@ pub enum Error {
     Extract(#[from] sc_extract::Error),
     #[error("texture decode failed: {0}")]
     Decode(String),
+    #[error("{0}")]
+    Catalog(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -45,6 +52,11 @@ impl Assets {
             source: AssetSource::from_install(&install)?,
             textures: Mutex::default(),
         })
+    }
+
+    /// The install's archive.
+    pub fn source(&self) -> &AssetSource {
+        &self.source
     }
 
     /// A geometry file (`.cgf` / `.cga` / `.skin`) packed for upload.

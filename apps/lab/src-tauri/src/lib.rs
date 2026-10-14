@@ -1,3 +1,4 @@
+mod catalog;
 mod commands;
 mod render;
 mod settings;
@@ -35,6 +36,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         render::load_skeleton,
         render::save_snapshot,
         render::save_log,
+        catalog::search_items,
+        catalog::item_scene,
+        catalog::load_inventory,
     ])
 }
 
@@ -54,10 +58,12 @@ pub fn run() {
 
     app.plugin(tauri_plugin_opener::init())
         .manage(render::RenderState::default())
+        .manage(catalog::CatalogState::default())
         .register_asynchronous_uri_scheme_protocol("scr", render::protocol)
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            catalog::start_loading(app.handle());
 
             #[cfg(desktop)]
             {

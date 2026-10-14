@@ -3227,6 +3227,8 @@ dependencies = [
  "image_dds",
  "sc-discovery",
  "sc-extract",
+ "sc-items",
+ "sc-items-visuals",
  "serde",
  "serde_json",
  "specta",
@@ -3483,6 +3485,25 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "urlencoding",
+]
+
+[[package]]
+name = "sc-items"
+version = "0.0.0"
+dependencies = [
+ "sc-extract",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "sc-items-visuals"
+version = "0.0.0"
+dependencies = [
+ "sc-extract",
+ "sc-items",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@
 import * as THREE from 'three';
 import { commands, type LayerInfo, type MaterialInfo, type SubMaterialInfo } from '$lib/bindings';
 import { fetchTexture } from './protocol';
-import type { Palette } from './fixtures';
+import type { Palette } from './scene';
 
 const NO_DRAW = new Set(['NoDraw']);
 

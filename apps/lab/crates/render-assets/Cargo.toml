@@ -7,6 +7,9 @@ description = "Reads Star Citizen models, materials and textures from the local 
 [dependencies]
 sc-discovery = { path = "../../../sc-holotable/crates/sc-discovery" }
 sc-extract = { path = "../../../sc-holotable/crates/sc-extract" }
+sc-items = { path = "../../../sc-holotable/crates/sc-items" }
+sc-items-visuals = { path = "../../../sc-holotable/crates/sc-items-visuals" }
+serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 specta = { version = "=2.0.0-rc.22", features = ["derive"], optional = true }
@@ -15,6 +18,3 @@ image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile"
 [features]
 default = []
 specta = ["dep:specta"]
-
-[dev-dependencies]
-serde_json = "1"
