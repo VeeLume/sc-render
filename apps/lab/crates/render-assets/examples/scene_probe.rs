@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("notes:");
         let mut notes: Vec<_> = notes.into_iter().collect();
-        notes.sort_by(|a, b| b.1.cmp(&a.1));
+        notes.sort_by_key(|n| std::cmp::Reverse(n.1));
         for (k, n) in notes.iter().take(15) {
             println!("  {n:6}  {k}");
         }
