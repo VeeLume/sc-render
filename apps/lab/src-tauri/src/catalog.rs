@@ -4,7 +4,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use render_assets::{Catalog, ChildSpec, InventoryNode, ItemSummary, SceneItem};
+use render_assets::{Body, Catalog, ChildSpec, InventoryNode, ItemSummary, SceneItem};
 use tauri::{AppHandle, Manager};
 
 use crate::render::RenderState;
@@ -53,19 +53,26 @@ pub async fn search_items(app: AppHandle, query: String) -> Result<Vec<ItemSumma
     blocking(move || Ok(wait(&app)?.search(&query, 200))).await
 }
 
-/// The render scene of an item; `children` replaces its default loadout.
+/// The render scene of an item; `children` replaces its default loadout;
+/// `body` picks armor and clothing variants (default female).
 #[tauri::command]
 #[specta::specta]
 pub async fn item_scene(
     app: AppHandle,
     guid: String,
     children: Option<Vec<ChildSpec>>,
+    body: Option<Body>,
 ) -> Result<SceneItem, String> {
     blocking(move || {
         let catalog = wait(&app)?;
         let assets = app.state::<RenderState>().assets()?;
         catalog
-            .scene(&assets, &guid, children.as_deref())
+            .scene(
+                &assets,
+                &guid,
+                children.as_deref(),
+                body.unwrap_or_default(),
+            )
             .map_err(|e| e.to_string())
     })
     .await

@@ -72,6 +72,8 @@ export class Cell {
 	readonly scene = new THREE.Scene();
 	readonly camera: THREE.PerspectiveCamera;
 	private item: THREE.Object3D | null = null;
+	/** Bumped per `show`; a render that finishes after a newer one started is dropped. */
+	private generation = 0;
 	private lights: THREE.Object3D[] = [];
 	private ambient = new THREE.AmbientLight(0x9aa6b8, 0.05);
 	private envMap: THREE.Texture | null = null;
@@ -105,8 +107,7 @@ export class Cell {
 
 	async show(fx: SceneItem, opts: CellOptions): Promise<string[]> {
 		const log: string[] = [];
-		if (this.item) this.scene.remove(this.item);
-		this.item = null;
+		const generation = ++this.generation;
 
 		this.aspect = fx.aspect;
 		for (const n of fx.notes) log.push(`note: ${n}`);
@@ -140,6 +141,11 @@ export class Cell {
 		pivot.traverse((o) => {
 			if ((o as THREE.Mesh).isMesh) o.castShadow = o.receiveShadow = true;
 		});
+		if (generation !== this.generation) {
+			log.push('superseded by a newer render');
+			return log;
+		}
+		if (this.item) this.scene.remove(this.item);
 		this.item = pivot;
 		this.scene.add(pivot);
 

@@ -1,19 +1,29 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Cell, type ToneMap } from '$lib/render/scene';
-	import { commands, type ChildSpec, type InventoryNode, type ItemSummary, type SceneItem } from '$lib/bindings';
+	import {
+		commands,
+		type Body,
+		type ChildSpec,
+		type InventoryNode,
+		type ItemSummary,
+		type SceneItem
+	} from '$lib/bindings';
 
 	/**
 	 * Dev regression set: items calibrated against in-game screenshots,
 	 * rendered and snapshotted on start (record names; `inventory:` takes the
-	 * first inventory item with that label, with its real attachments).
+	 * first inventory item with that label, with its real attachments;
+	 * `search:` the middle hit of a search, for spot checks).
 	 */
 	const DEV_SET = [
 		'behr_rifle_ballistic_01_sf01',
 		'gmni_pistol_ballistic_01_pink_cian01',
 		'POWR_AMRS_S02_JS400_SCItem',
 		'can_drink_3_energy_a',
-		'inventory:Bosco Weapon Display Rack'
+		'inventory:Bosco Weapon Display Rack',
+		'srvl_combat_medium_core_03_01_01',
+		'qrt_specialist_medium_helmet_01_01_16'
 	];
 
 	let canvas: HTMLCanvasElement;
@@ -27,6 +37,9 @@
 	let toneMap = $state<ToneMap>('linear');
 	let rimScale = $state(1);
 	let env = $state(2);
+	/** Armor and clothing are shown for this body. */
+	let body = $state<Body>('Female');
+	let lastShown: { guid: string; children: ChildSpec[] | null } | null = null;
 
 	let query = $state('');
 	let results = $state<ItemSummary[]>([]);
@@ -52,7 +65,8 @@
 		busy = true;
 		error = null;
 		try {
-			const res = await commands.itemScene(guid, children);
+			lastShown = { guid, children };
+			const res = await commands.itemScene(guid, children, body);
 			if (res.status !== 'ok') throw new Error(res.error);
 			current = res.data;
 			fit();
@@ -137,6 +151,12 @@
 				if (node) await showNode(node, safeName(`inv_${node.label}`));
 				continue;
 			}
+			if (entry.startsWith('search:')) {
+				const res = await commands.searchItems(entry.slice(7));
+				const hit = res.status === 'ok' ? res.data[Math.floor(res.data.length / 2)] : null;
+				if (hit) await show(hit.guid, null, safeName(`sample_${entry.slice(7)}`));
+				continue;
+			}
 			const res = await commands.searchItems(entry);
 			const hit = res.status === 'ok' ? res.data.find((h) => h.record.toLowerCase() === entry.toLowerCase()) : null;
 			if (hit) await show(hit.guid);
@@ -199,6 +219,17 @@
 			</div>
 		</div>
 		<div class="space-y-3 text-xs">
+			<div class="flex gap-1">
+				{#each ['Female', 'Male'] as const as b (b)}
+					<button
+						class="flex-1 rounded border px-2 py-1 {body === b ? 'bg-muted font-medium' : ''}"
+						onclick={() => {
+							body = b;
+							if (lastShown) show(lastShown.guid, lastShown.children);
+						}}>{b}</button
+					>
+				{/each}
+			</div>
 			<label class="block"
 				>Light scale {lightScale.toFixed(2)}
 				<input type="range" min="0.1" max="10" step="0.05" bind:value={lightScale} oninput={relight} class="w-full" />

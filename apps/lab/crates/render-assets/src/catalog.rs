@@ -24,6 +24,30 @@ use crate::{Assets, Error, Result};
 pub const FALLBACK_OFFSET: [f32; 3] = [0.0, 205.0, 0.0];
 pub const FALLBACK_ELEVATION: f32 = 8.0;
 
+/// The character body an item is shown for. Armor and clothing select their
+/// geometry variant by it (`Female` / `Male`), then by
+/// `inventoryStoredEntity`: the item as stored, a static `_prop.cgf` instead
+/// of the packaging crate. The game binds the tag at runtime from the
+/// player's character; tags only pick variants that ask for them, so other
+/// items are unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum Body {
+    #[default]
+    Female,
+    Male,
+}
+
+impl Body {
+    /// The geometry tags an inventory cell selects variants by.
+    pub fn tags(self) -> &'static [&'static str] {
+        match self {
+            Body::Female => &["Female", "inventoryStoredEntity"],
+            Body::Male => &["Male", "inventoryStoredEntity"],
+        }
+    }
+}
+
 /// Nesting limit for attached items (rack → rifle → scope is three).
 const MAX_DEPTH: usize = 6;
 
@@ -187,6 +211,14 @@ impl Catalog {
         })
     }
 
+    /// Every item with a recipe.
+    pub fn all(&self) -> Vec<ItemSummary> {
+        self.labels
+            .iter()
+            .map(|(g, l)| self.summary(g, l))
+            .collect()
+    }
+
     /// Items whose display or record name contains every word of `query`.
     pub fn search(&self, query: &str, limit: usize) -> Vec<ItemSummary> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
@@ -244,6 +276,7 @@ impl Catalog {
         assets: &Assets,
         guid: &str,
         children: Option<&[ChildSpec]>,
+        body: Body,
     ) -> Result<SceneItem> {
         let guid = parse_guid(guid)?;
         let item = self
@@ -255,7 +288,7 @@ impl Catalog {
             .get(&guid)
             .ok_or_else(|| Error::Catalog(format!("{guid} has no geometry")))?;
         let mut notes = Vec::new();
-        let root = self.part(assets, &guid, children, 0, &mut notes)?;
+        let root = self.part(assets, &guid, children, body, 0, &mut notes)?;
         let (offset, elevation) = match self.view.orientation(item, visual) {
             Some(o) => (o, 0.0),
             None => {
@@ -302,6 +335,7 @@ impl Catalog {
         assets: &Assets,
         guid: &Guid,
         children: Option<&[ChildSpec]>,
+        body: Body,
         depth: usize,
         notes: &mut Vec<String>,
     ) -> Result<ScenePart> {
@@ -311,7 +345,7 @@ impl Catalog {
             .get(guid)
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry")))?;
         let look = visual
-            .look(&[])
+            .look(body.tags())
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry path")))?;
         let palette = look
             .palette
@@ -390,15 +424,22 @@ impl Catalog {
             }
         };
         for c in children {
-            let Some(helper) = visual.port(&c.port).and_then(|p| p.helper.clone()) else {
-                notes.push(format!("{record}: no port {} with a helper", c.port));
-                continue;
-            };
             let child = match parse_guid(&c.guid) {
                 Ok(g) if self.visuals.get(&g).is_some() => g,
                 _ => continue, // not drawn (sensors, controllers)
             };
-            match self.part(assets, &child, c.children.as_deref(), depth + 1, notes) {
+            let Some(helper) = visual.port(&c.port).and_then(|p| p.helper.clone()) else {
+                notes.push(format!("{record}: no port {} with a helper", c.port));
+                continue;
+            };
+            match self.part(
+                assets,
+                &child,
+                c.children.as_deref(),
+                body,
+                depth + 1,
+                notes,
+            ) {
                 Ok(p) => part.attachments.push(SceneAttachment {
                     bone: helper,
                     part: p,

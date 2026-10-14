@@ -11,7 +11,7 @@ mod model;
 mod texture;
 
 pub use catalog::{
-    Catalog, ChildSpec, FALLBACK_ELEVATION, FALLBACK_OFFSET, InventoryNode, ItemSummary,
+    Body, Catalog, ChildSpec, FALLBACK_ELEVATION, FALLBACK_OFFSET, InventoryNode, ItemSummary,
     SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
 };
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};

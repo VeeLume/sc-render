@@ -86,11 +86,12 @@ async searchItems(query: string) : Promise<Result<ItemSummary[], string>> {
 }
 },
 /**
- * The render scene of an item; `children` replaces its default loadout.
+ * The render scene of an item; `children` replaces its default loadout;
+ * `body` picks armor and clothing variants (default female).
  */
-async itemScene(guid: string, children: ChildSpec[] | null) : Promise<Result<SceneItem, string>> {
+async itemScene(guid: string, children: ChildSpec[] | null, body: Body | null) : Promise<Result<SceneItem, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("item_scene", { guid, children }) };
+    return { status: "ok", data: await TAURI_INVOKE("item_scene", { guid, children, body }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -125,6 +126,15 @@ export type AppSettings = {
  * Whether first-launch onboarding has been completed or skipped.
  */
 onboarding_completed: boolean }
+/**
+ * The character body an item is shown for. Armor and clothing select their
+ * geometry variant by it (`Female` / `Male`), then by
+ * `inventoryStoredEntity`: the item as stored, a static `_prop.cgf` instead
+ * of the packaging crate. The game binds the tag at runtime from the
+ * player's character; tags only pick variants that ask for them, so other
+ * items are unaffected.
+ */
+export type Body = "Female" | "Male"
 /**
  * A skeleton bone in the model's space.
  */
