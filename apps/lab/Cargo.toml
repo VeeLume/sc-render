@@ -1,0 +1,17 @@
+# Virtual workspace root — lets cargo, `just`, and the git hooks run from the
+# repo root while the app crate lives at src-tauri/. Feature and service crates
+# go in crates/ and are picked up by the glob.
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/*"]
+
+# Profiles must live at the workspace root — member profiles are ignored.
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

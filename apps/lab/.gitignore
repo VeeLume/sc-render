@@ -1,0 +1,23 @@
+# Rust
+/target
+Cargo.lock merge=binary
+
+# Node / SvelteKit
+node_modules/
+/.svelte-kit
+/build
+.env
+.env.*
+!.env.example
+
+# Tauri
+/src-tauri/target
+/src-tauri/gen/schemas
+# Updater signing key — NEVER commit. The public half lives in tauri.conf.json.
+*.key
+*.jks
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/

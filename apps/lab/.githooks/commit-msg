@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+commit_msg_file="$1"
+commit_msg=$(head -1 "$commit_msg_file")
+
+# Allow merge commits and fixup/squash/amend
+case "$commit_msg" in
+    Merge\ *|fixup!\ *|squash!\ *|amend!\ *)
+        exit 0 ;;
+esac
+
+# Conventional commit:  type(optional-scope)optional-!: description
+pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_-]+\))?!?: .+'
+
+if ! [[ "$commit_msg" =~ $pattern ]]; then
+    echo "✖ Commit message does not follow Conventional Commits format." >&2
+    echo "" >&2
+    echo "  Expected: <type>[optional scope]: <description>" >&2
+    echo "" >&2
+    echo "  Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert" >&2
+    echo "" >&2
+    echo "  Examples:" >&2
+    echo "    feat: add timer action" >&2
+    echo "    fix(loader): correct cache invalidation" >&2
+    echo "    feat!: redesign settings storage (breaking)" >&2
+    echo "" >&2
+    echo "  Your message: $commit_msg" >&2
+    exit 1
+fi

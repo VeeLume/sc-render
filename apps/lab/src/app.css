@@ -1,0 +1,81 @@
+/*
+ * Structure, not taste. This file is template-managed and arrives with
+ * `copier update`; the colour tokens it maps live in theme.css, which is
+ * generated once and then yours forever.
+ *
+ * The density system is the one genuinely opinionated bit: every interactive
+ * control binds its height to --density-target, so "comfortable" (48px, touch)
+ * vs "compact" (36px, mouse) flows through the whole UI from one <html>
+ * attribute. See $lib/stores/appearance.svelte.ts.
+ */
+@import 'tailwindcss';
+@import './theme.css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+	/* Comfortable — touch-sized targets, the mobile/tablet default. */
+	--density-unit: 1rem;
+	--density-padding: 1rem;
+	--density-gap: 0.75rem;
+	--density-target: 3rem; /* 48px touch target */
+}
+
+[data-density='compact'] {
+	--density-unit: 0.875rem;
+	--density-padding: 0.75rem;
+	--density-gap: 0.5rem;
+	--density-target: 2.25rem; /* 36px, mouse-friendly */
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+	* {
+		border-color: var(--border);
+	}
+	body {
+		margin: 0;
+		font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+		font-size: var(--density-unit);
+		line-height: 1.5;
+		background-color: var(--background);
+		color: var(--foreground);
+	}
+	/* Desktop webviews shouldn't feel like a document. */
+	body {
+		-webkit-user-select: none;
+		user-select: none;
+	}
+	input,
+	textarea,
+	[contenteditable] {
+		-webkit-user-select: text;
+		user-select: text;
+	}
+}

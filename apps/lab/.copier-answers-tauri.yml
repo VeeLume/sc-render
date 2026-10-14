@@ -1,0 +1,15 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v0.1.1
+_src_path: E:/vscode/veelume-template-tauri
+android: false
+author: Valerie
+description: Renders Star Citizen inventory items the way the game does, from the
+    local install
+i18n: false
+identifier: icu.veelume.scitemrender
+modules: false
+project_name: SC Item Render
+project_slug: sc-item-render
+theme_seed: warm
+tray: false
+workspace: true

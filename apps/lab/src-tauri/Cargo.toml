@@ -1,0 +1,57 @@
+[package]
+name = "sc-item-render"
+version = "0.1.0"
+description = "Renders Star Citizen inventory items the way the game does, from the local install"
+authors = ["Valerie"]
+edition = "2021"
+# Required because a second [[bin]] (export-bindings) is declared below: without
+# it `cargo run` cannot choose a target, and `tauri dev`'s DevCommand is a bare
+# `cargo run` — so `just dev` dies with exit 101 on an untouched scaffold.
+# Gating that bin behind `required-features` does not help; cargo counts
+# declared targets, not buildable ones.
+default-run = "sc-item-render"
+
+[[bin]]
+name = "sc-item-render"
+path = "src/main.rs"
+
+# Dev-only bindings exporter. Behind a non-default feature so `cargo build` and
+# `tauri build` skip it — Tauri compiles every [[bin]] and bundles it into the
+# installer otherwise (tauri-apps/tauri#7592). Kept a [[bin]] rather than an
+# example so it links beside the WebView2 DLLs the lib needs at load time.
+[[bin]]
+name = "export-bindings"
+path = "src/bin/export_bindings.rs"
+required-features = ["bindgen"]
+
+[lib]
+# `_lib` suffix: on mobile the app is a cdylib and the bin name would collide.
+name = "sc_item_render_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+bindgen = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Typed IPC: every #[specta::specta] command is exported to src/lib/bindings.ts
+# on debug builds. Pinned — the rc versions of these three must agree.
+specta = "=2.0.0-rc.22"
+specta-typescript = "0.0.9"
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+urlencoding = "2"
+render-assets = { version = "0.1.0", path = "../crates/render-assets", features = ["specta"] }
+
+# Desktop-only: the signed auto-updater and the relaunch that follows it.
+# Mobile has no Tauri updater (Android ships its own APK flow).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

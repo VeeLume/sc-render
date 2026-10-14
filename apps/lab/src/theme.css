@@ -1,0 +1,55 @@
+/*
+ * The theme. Seeded once from the template's `warm` seed and never
+ * touched again — copier will not overwrite this file. Edit freely, or paste a
+ * whole theme from https://tweakcn.com over the two blocks below.
+ *
+ * The token *names* are the contract (app.css maps them into Tailwind via
+ * `@theme inline`, shadcn-svelte components expect exactly this set). Values
+ * are yours.
+ */
+/* warm — warm charcoal + amber accent (starlume / Hearth). */
+:root {
+	--background: oklch(0.985 0.004 85);
+	--foreground: oklch(0.22 0.012 60);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.22 0.012 60);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.22 0.012 60);
+	--primary: oklch(0.68 0.155 62);
+	--primary-foreground: oklch(0.19 0.012 60);
+	--secondary: oklch(0.955 0.008 80);
+	--secondary-foreground: oklch(0.28 0.014 60);
+	--muted: oklch(0.955 0.008 80);
+	--muted-foreground: oklch(0.53 0.014 65);
+	--accent: oklch(0.93 0.024 75);
+	--accent-foreground: oklch(0.28 0.02 60);
+	--destructive: oklch(0.577 0.245 27.325);
+	--destructive-foreground: oklch(0.985 0 0);
+	--border: oklch(0.9 0.01 75);
+	--input: oklch(0.9 0.01 75);
+	--ring: oklch(0.68 0.155 62);
+	--radius: 0.5rem;
+}
+
+.dark {
+	--background: oklch(0.18 0.008 60);
+	--foreground: oklch(0.95 0.008 80);
+	--card: oklch(0.23 0.01 60);
+	--card-foreground: oklch(0.95 0.008 80);
+	--popover: oklch(0.23 0.01 60);
+	--popover-foreground: oklch(0.95 0.008 80);
+	--primary: oklch(0.76 0.15 65);
+	--primary-foreground: oklch(0.19 0.012 60);
+	--secondary: oklch(0.28 0.012 60);
+	--secondary-foreground: oklch(0.95 0.008 80);
+	--muted: oklch(0.28 0.012 60);
+	--muted-foreground: oklch(0.71 0.014 70);
+	--accent: oklch(0.32 0.028 65);
+	--accent-foreground: oklch(0.95 0.008 80);
+	--destructive: oklch(0.704 0.191 22.216);
+	--destructive-foreground: oklch(0.985 0 0);
+	--border: oklch(1 0 0 / 12%);
+	--input: oklch(1 0 0 / 16%);
+	--ring: oklch(0.76 0.15 65);
+	--radius: 0.5rem;
+}

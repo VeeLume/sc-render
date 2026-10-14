@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Pre-commit: auto-format staged Rust, then re-stage. Bypass once with: git commit --no-verify
+[ -f Cargo.toml ] || exit 0   # not a Rust project at this root — skip
+
+echo "▶ cargo fmt (auto-fix)"
+# Remember which files are currently staged (excluding deletions)
+STAGED=$(git diff --cached --name-only --diff-filter=d)
+cargo fmt --all
+# Re-stage the originally-staged files so formatting changes are included
+if [ -n "$STAGED" ]; then
+    echo "$STAGED" | xargs git add
+fi

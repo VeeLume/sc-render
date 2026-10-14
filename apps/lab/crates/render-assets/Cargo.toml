@@ -1,0 +1,17 @@
+[package]
+name = "render-assets"
+version = "0.1.0"
+edition = "2024"
+description = "Reads Star Citizen models, materials and textures from the local install and prepares them for a renderer"
+
+[dependencies]
+sc-discovery = { path = "../../../sc-holotable/crates/sc-discovery" }
+sc-extract = { path = "../../../sc-holotable/crates/sc-extract" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+specta = { version = "=2.0.0-rc.22", features = ["derive"], optional = true }
+image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+
+[features]
+default = []
+specta = ["dep:specta"]

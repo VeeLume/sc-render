@@ -1,0 +1,6 @@
+# LF in the repo, whatever the OS checks out. Keeps Windows clones from
+# rewriting every file the first time a hook or formatter touches it.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
