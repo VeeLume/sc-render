@@ -61,6 +61,8 @@ export interface Fixture extends ItemPart {
 	label: string;
 	/** PIT `orientationOffset` of the item's category, degrees. */
 	offset: [number, number, number];
+	/** Extra viewing elevation in degrees (camera above the item), not in the game's data. */
+	elevation?: number;
 	rig: RigLight[];
 	/** Cell width / height. */
 	aspect: number;
@@ -201,10 +203,13 @@ const GEN_GREYLIGHT_SUNYELLOW_REDBROWN: Palette = [
 /**
  * Pose for an item no PIT orientation entry matches. The game then applies no
  * offset and shows a prop's back (the Bosco rack); we prefer a recognisable
- * view: front three-quarter from slightly above, front lit by the key light.
- * Props face away from the camera at offset 0, so the front is around yaw 180.
+ * view: front three-quarter, front lit by the key light, seen from slightly
+ * above. Props face away from the camera at offset 0, so the front is around
+ * yaw 180. The look-down is a viewing elevation, not an offset pitch: a pitch
+ * in the offset tilts the item about its own axis and makes it lean.
  */
-export const FALLBACK_OFFSET: [number, number, number] = [-15, 205, 0];
+export const FALLBACK_OFFSET: [number, number, number] = [0, 205, 0];
+export const FALLBACK_ELEVATION = 8;
 
 /**
  * PlayerDeco_Gunrack_4P_3R_lowtech_1_a ("Bosco Weapon Display Rack"): Misc /
@@ -215,6 +220,7 @@ const RACK = {
 	geometry: 'objects/buildingsets/human/lowtech/prop/gunrack/gunrack_1_a.cga',
 	palette: GEN_GREYLIGHT_SUNYELLOW_REDBROWN,
 	offset: FALLBACK_OFFSET,
+	elevation: FALLBACK_ELEVATION,
 	rig: MASTER_RIG,
 	aspect: 1
 };

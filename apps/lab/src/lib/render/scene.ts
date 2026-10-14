@@ -106,8 +106,13 @@ export class Cell {
 		const rot = new THREE.Group();
 		rot.rotation.copy(ang3([90 + fx.offset[0], fx.offset[1], fx.offset[2]]));
 		rot.add(model);
+		// Viewing elevation: turns the posed item about the screen's horizontal
+		// axis, i.e. the camera looks from above without the item leaning.
+		const view = new THREE.Group();
+		view.rotation.x = (fx.elevation ?? 0) * DEG;
+		view.add(rot);
 		const pivot = new THREE.Group();
-		pivot.add(rot);
+		pivot.add(view);
 		pivot.updateMatrixWorld(true);
 		const box = visibleBounds(pivot);
 		const size = box.getSize(new THREE.Vector3());
