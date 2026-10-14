@@ -28,11 +28,17 @@ pub struct Rgba {
     pub width: u32,
     pub height: u32,
     pub data: Vec<u8>,
+    /// The engine reads it as sRGB ([`sc_extract::Texture::is_srgb`]); only
+    /// ever set for [`TextureKind::Color`].
+    pub srgb: bool,
 }
 
 pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) -> Result<Rgba> {
     match kind {
-        TextureKind::Color => decode_dds(&t.dds, max_size),
+        TextureKind::Color => Ok(Rgba {
+            srgb: t.is_srgb(),
+            ..decode_dds(&t.dds, max_size)?
+        }),
         TextureKind::Normal => {
             let mut img = decode_dds(&t.dds, max_size)?;
             for px in img.data.as_chunks_mut::<4>().0 {
@@ -75,6 +81,66 @@ pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) 
     }
 }
 
+/// A decoded volume texture: `depth` slices of `width × height` RGBA8,
+/// row-major, slice after slice.
+pub struct Volume {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub data: Vec<u8>,
+}
+
+/// An uncompressed RGB(A) volume DDS (masked channels, top mip only); what
+/// the engine's small lookup tables such as the layer-blend hue LUT are.
+pub(crate) fn decode_volume(bytes: &[u8]) -> Result<Volume> {
+    let dds = Dds::read(bytes).map_err(|e| Error::Decode(e.to_string()))?;
+    let pf = &dds.header.spf;
+    let (Some(bits), Some(r), Some(g), Some(b)) = (
+        pf.rgb_bit_count,
+        pf.r_bit_mask,
+        pf.g_bit_mask,
+        pf.b_bit_mask,
+    ) else {
+        return Err(Error::Decode("volume is not uncompressed RGB".into()));
+    };
+    if bits % 8 != 0 || !(8..=32).contains(&bits) {
+        return Err(Error::Decode(format!("{bits}-bit volume texels")));
+    }
+    let a = pf.a_bit_mask.unwrap_or(0);
+    let (width, height, depth) = (dds.get_width(), dds.get_height(), dds.get_depth().max(1));
+    let stride = (bits / 8) as usize;
+    let texels = (width * height * depth) as usize;
+    let src = dds
+        .data
+        .get(..texels * stride)
+        .ok_or_else(|| Error::Decode("volume data truncated".into()))?;
+    let channel = |texel: u32, mask: u32| -> u8 {
+        if mask == 0 {
+            return 255;
+        }
+        ((texel & mask) >> mask.trailing_zeros()) as u8
+    };
+    let mut data = Vec::with_capacity(texels * 4);
+    for px in src.chunks_exact(stride) {
+        let texel = px
+            .iter()
+            .rev()
+            .fold(0u32, |acc, &byte| (acc << 8) | u32::from(byte));
+        data.extend([
+            channel(texel, r),
+            channel(texel, g),
+            channel(texel, b),
+            channel(texel, a),
+        ]);
+    }
+    Ok(Volume {
+        width,
+        height,
+        depth,
+        data,
+    })
+}
+
 /// The largest mip that fits in `max_size`, decoded.
 fn decode_dds(bytes: &[u8], max_size: u32) -> Result<Rgba> {
     let dds = Dds::read(bytes).map_err(|e| Error::Decode(e.to_string()))?;
@@ -89,5 +155,6 @@ fn decode_dds(bytes: &[u8], max_size: u32) -> Result<Rgba> {
         width: img.width(),
         height: img.height(),
         data: img.into_raw(),
+        srgb: false,
     })
 }

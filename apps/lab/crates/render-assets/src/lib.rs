@@ -15,7 +15,7 @@ pub use catalog::{
     SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
 };
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
-pub use texture::{Rgba, TextureKind};
+pub use texture::{Rgba, TextureKind, Volume};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -105,7 +105,17 @@ impl Assets {
             .insert(key, rgba.clone());
         Ok(rgba)
     }
+
+    /// The LayerBlend hue-shift lookup table (8 × 8 × 16 RGB): two 8³ colour
+    /// cubes stacked in depth, the first for positive, the second for
+    /// negative shifts. The HueAoLum map's `.x` blends towards it.
+    pub fn hue_lut(&self) -> Result<Volume> {
+        let bytes = self.source.read(HUE_LUT)?;
+        texture::decode_volume(&bytes)
+    }
 }
+
+const HUE_LUT: &str = r"Engine\EngineAssets\Textures\layerblendHueLUT.dds";
 
 /// A skeleton bone in the model's space.
 #[derive(Debug, Clone, Serialize)]

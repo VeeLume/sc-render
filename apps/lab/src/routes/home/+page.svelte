@@ -33,7 +33,8 @@
 		'Harvestable_Mineral_1H_Beradom',
 		'Carryable_1H_CY_Physical_Currency_Scrip_Merc_1',
 		'none_pistol_ballistic_01',
-		'vgl_flightsuit_helmet_01_03_01'
+		'vgl_flightsuit_helmet_01_03_01',
+		'search:invictus flight jacket'
 	];
 
 	let canvas: HTMLCanvasElement;

@@ -11,12 +11,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in std::env::args().skip(1) {
         match sc_extract::Texture::read(&assets, &path) {
             Ok(t) => println!(
-                "{path}: {:?} {}x{} mips {} alpha {}",
+                "{path}: {:?} {}x{} mips {} alpha {} srgb {}",
                 t.format(),
                 t.width(),
                 t.height(),
                 t.mip_count(),
-                t.alpha.is_some()
+                t.alpha.is_some(),
+                t.is_srgb()
             ),
             Err(e) => println!("{path}: {e}"),
         }

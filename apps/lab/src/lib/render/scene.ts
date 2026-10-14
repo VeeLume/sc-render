@@ -77,6 +77,7 @@ export class Cell {
 	private lights: THREE.Object3D[] = [];
 	private ambient = new THREE.AmbientLight(0x9aa6b8, 0.05);
 	private envMap: THREE.Texture | null = null;
+	private shaderErrors: string[] = [];
 
 	/** Cell width / height; set per item in `show`. */
 	aspect = 1;
@@ -87,6 +88,16 @@ export class Cell {
 		this.renderer.toneMapping = THREE.LinearToneMapping;
 		this.renderer.shadowMap.enabled = true;
 		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+		// A patched material that fails to compile just disappears; its errors
+		// go into the render log (once per program, on first use).
+		this.renderer.debug.onShaderError = (gl, program, vs, fs) => {
+			const link = gl.getProgramInfoLog(program)?.trim();
+			if (link) this.shaderErrors.push(`shader error (link): ${link}`);
+			for (const [stage, sh] of [['vertex', vs], ['fragment', fs]] as const) {
+				const info = gl.getShaderInfoLog(sh);
+				if (info?.trim()) this.shaderErrors.push(`shader error (${stage}): ${info.trim()}`);
+			}
+		};
 		this.camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
 		// A cell is 1 unit high; back off until it fills the vertical FOV.
 		this.camera.position.set(0, 0, -0.5 / Math.tan((FOV / 2) * DEG));
@@ -155,6 +166,7 @@ export class Cell {
 
 		this.setLights(fx, opts);
 		this.render();
+		log.push(...this.shaderErrors.splice(0));
 		return log;
 	}
 
@@ -163,6 +175,9 @@ export class Cell {
 		this.lights = [];
 		const group = new THREE.Group();
 		group.rotation.copy(ang3([90, 180, 0]));
+		// One shadow map at most, from the strongest caster: each costs a
+		// sampler, and LayerBlend needs 13 of the 16 (see materials.ts).
+		const caster = fx.rig.filter((l) => l.casts_shadows).sort((a, b) => b.intensity - a.intensity)[0];
 		for (const l of fx.rig) {
 			const spot = new THREE.SpotLight(
 				new THREE.Color(...l.color),
@@ -179,7 +194,7 @@ export class Cell {
 			spot.position.set(0, 0, 0);
 			spot.target.position.set(1, 0, 0);
 			holder.add(spot.target);
-			spot.castShadow = l.casts_shadows;
+			spot.castShadow = l === caster;
 			spot.shadow.mapSize.set(2048, 2048);
 			spot.shadow.bias = -0.0005;
 			group.add(holder);
@@ -200,8 +215,9 @@ export class Cell {
 }
 
 /**
- * Equirectangular studio for reflections: a dark room, dimly lit above, with
- * one large softbox up and toward the camera. Glossy surfaces then show a
+ * Equirectangular studio for reflections: a grey room, brighter above, with
+ * one large softbox up and toward the camera. Bare polished metal (the MG
+ * Scrip's aluminium, the P6-LR's tops) needs the room to read silver. Glossy surfaces then show a
  * defined highlight (the white blocks on the game's P6-LR icon) and keep
  * their colour elsewhere; an all-bright sky washed mirror-glossy paint out
  * to white. +Y is up and +Z points at the camera (the cell turns it).
@@ -218,7 +234,7 @@ function studioEnvironment(): THREE.DataTexture {
 		for (let x = 0; x < w; x++) {
 			const az = ((x + 0.5) / w - 0.5) * 2 * Math.PI;
 			dir.set(Math.cos(elev) * Math.cos(az), Math.sin(elev), Math.cos(elev) * Math.sin(az));
-			const room = 0.02 + 0.1 * THREE.MathUtils.smoothstep(elev / DEG, -10, 60);
+			const room = 0.2 + 0.2 * THREE.MathUtils.smoothstep(elev / DEG, -30, 60);
 			const angle = dir.angleTo(box) / DEG;
 			const softbox = 2 * (1 - THREE.MathUtils.smoothstep(angle, 22, 32));
 			const v = room + softbox;

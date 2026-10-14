@@ -11,30 +11,46 @@
 //                  Shininess / 255 = gloss, TexSlot2 normal. Drawn as a
 //                  transparent layer whose opacity grows as the tint darkens;
 //                  it casts no shadow. Thin film, dirt and glare not modelled.
+//   Organic        Rocks and crystals: TexSlot10 albedo (else TexSlot3 diffuse),
+//                  TexSlot2 ddna; TransmittanceColor glows through when
+//                  TRANSMITTANCE_LIGHTING is on (a stand-in for the game's
+//                  light transmission). Its detail layers are not modelled.
 //   LayerBlend_V2  Up to four MatLayers BaseLayer1-4 (each a `Layer` .mtl with
-//                  TexSlot1 diffuse, TexSlot2 ddna), with BLEND_MAP chosen per
-//                  pixel by TexSlot12: near-exclusive masks over a base of
-//                  layer 3, R mixing in layer 1, G layer 2, B layer 4 (with
-//                  fewer than three layers the base is layer 1). Fitted to
-//                  in-game shots of the Big Bite helmet: shell B -> olive 4,
-//                  camo and face mask black -> dark 3, stripe and mask
-//                  markers R -> red 1, teeth G -> white 2.
+//                  TexSlot1 diffuse, TexSlot2 ddna). The rules below follow
+//                  the game's own G-buffer shader (read from the local Vulkan
+//                  shader cache; only the rules are kept here):
+//                  - TexSlot12 blend map (sampled as sRGB, as the texture's
+//                    engine flag asks), in priority order: layer 1 by R,
+//                    layer 2 by G of the rest, layer 3 by B of what is left,
+//                    the last layer fills the remainder.
+//                  - Per layer: colour = layer Diffuse x texture; F0 = layer
+//                    Specular; gloss = Shininess / 255 x GlossMult x texture
+//                    gloss. No submaterial-level gloss.
+//                  - The layer's TintMode says what is tinted: 1 (paints,
+//                    fabric) the colour, 2 (metals) the F0, 0 (weapon
+//                    layers) both. The MatLayer TintColor multiplies it;
+//                    PaletteTint 1-3 takes the tint palette's entry A-C,
+//                    multiplying the colour and replacing the F0. The entry's
+//                    glossiness always multiplies the layer gloss. (Shader:
+//                    palette flags; TintMode's role and TintColor on F0:
+//                    inferred from the layer data, mode 0 unverified.)
+//                  - TexSlot13 HueAoLum map: .z scales colour and F0 by
+//                    0.8-1.2, .x hue-shifts them through the engine's hue LUT,
+//                    .y is ambient occlusion on both.
+//                  - Layer ShadingModel 4 (fabrics) is drawn as sheen instead
+//                    of specular, 1 and 3 (`_clearcoat` layers) with a clear
+//                    coat: stand-ins for the game's deferred lighting models.
 //                  TexSlot3 macro normal; layer textures tiled by the layer's
-//                  UVTiling. A layer with PaletteTint 1-3 takes the tint
-//                  palette's entry A-C: colour multiplied in, its spec as F0
-//                  (dielectric layers only), its glossiness pulling gloss
-//                  towards 1; the submaterial's own Shininess / 255 scales the
-//                  result (255 on hard surfaces, 10 on cloth: matte). With the
-//                  DECALS feature, TexSlot9 is a decal
+//                  UVTiling. With the DECALS feature, TexSlot9 is a decal
 //                  sheet placed by the vertex colour (24 bits -> two 12-bit
 //                  coordinates, StarBreaker addon's layer_blend_decals);
 //                  DiffuseDecalGloss / DiffuseDecalSpec are the decal's own
-//                  surface. Wear layers are not drawn (items show pristine;
-//                  the TexSlot11 mask is white where paint is intact) and
-//                  HEIGHT_MAP / HAL (TexSlot13) details are not modelled yet.
+//                  surface. Wear layers are not drawn (a new item has no
+//                  wear, and the game then draws the base layers only);
+//                  HEIGHT_MAP, vertex AO and the detail maps are not modelled.
 import * as THREE from 'three';
 import { commands, type LayerInfo, type MaterialInfo, type SubMaterialInfo } from '$lib/bindings';
-import { fetchTexture } from './protocol';
+import { fetchHueLut, fetchTexture } from './protocol';
 import type { Palette } from './scene';
 
 const NO_DRAW = new Set(['NoDraw']);
@@ -71,6 +87,25 @@ const F0_LINE =
 	'material.specularColor = min( pow2( ( material.ior - 1.0 ) / ( material.ior + 1.0 ) ) * specularColorFactor, vec3( 1.0 ) ) * specularIntensityFactor;';
 
 /**
+ * Replace `line` inside three's shader chunk `name`. onBeforeCompile sees
+ * chunks as unexpanded `#include`s, so a plain replace on the shader never
+ * reaches their lines: the chunk is inlined with the change; `after` follows
+ * it.
+ */
+function patchChunk(shader: string, name: keyof typeof THREE.ShaderChunk, line: string, by: string, after = ''): string {
+	const chunk: string = THREE.ShaderChunk[name];
+	if (!chunk.includes(line)) console.warn(`three changed ${name}: patch not applied`);
+	return shader.replace(`#include <${name}>`, `${chunk.replace(line, by)}\n${after}`);
+}
+
+/** Set F0 to the GLSL expression `f0`; `after` runs once three's material setup is done. */
+function withF0(fragmentShader: string, f0: string, after = ''): string {
+	return patchChunk(fragmentShader, 'lights_physical_fragment', F0_LINE, `material.specularColor = ${f0};`, after);
+}
+
+const MAP_N_LINE = 'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;';
+
+/**
  * The environment only reflects: keep its specular, drop its diffuse
  * irradiance (matte items stay as calibrated; see CellOptions.env).
  */
@@ -91,6 +126,7 @@ export async function buildMaterial(s: SubMaterialInfo, palette?: Palette): Prom
 	if (NO_DRAW.has(s.shader) || s.name.startsWith('$')) return null;
 	if (s.shader.startsWith('LayerBlend')) return layerBlend(s, palette);
 	if (s.shader === 'GlassPBR') return glass(s);
+	if (s.shader === 'Organic') return organic(s);
 	return illum(s);
 }
 
@@ -118,21 +154,18 @@ async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
 			uF0: { value: color(s.specular) },
 			uSpecMap: { value: specMap }
 		});
-		shader.fragmentShader = shader.fragmentShader
-			.replace('#include <common>', '#include <common>\nuniform float uGlossMul;\nuniform vec3 uF0;\nuniform sampler2D uSpecMap;')
-			.replace(
-				'#include <roughnessmap_fragment>',
-				hasGlossMap
-					? 'float roughnessFactor = 1.0 - texture2D( roughnessMap, vRoughnessMapUv ).g * uGlossMul;'
-					: 'float roughnessFactor = 1.0 - uGlossMul;'
-			)
-			.replace(
-				F0_LINE,
-				specMap
-					? 'material.specularColor = uF0 * texture2D( uSpecMap, vMapUv ).rgb;'
-					: 'material.specularColor = uF0;'
-			)
-			.replace(IBL_LINE, SPECULAR_ONLY_IBL);
+		shader.fragmentShader = withF0(
+			shader.fragmentShader
+				.replace('#include <common>', '#include <common>\nuniform float uGlossMul;\nuniform vec3 uF0;\nuniform sampler2D uSpecMap;')
+				.replace(
+					'#include <roughnessmap_fragment>',
+					hasGlossMap
+						? 'float roughnessFactor = 1.0 - texture2D( roughnessMap, vRoughnessMapUv ).g * uGlossMul;'
+						: 'float roughnessFactor = 1.0 - uGlossMul;'
+				)
+				.replace(IBL_LINE, SPECULAR_ONLY_IBL),
+			specMap ? 'uF0 * texture2D( uSpecMap, vMapUv ).rgb' : 'uF0'
+		);
 	};
 	if (s.features.includes('DECAL')) {
 		m.transparent = true;
@@ -168,12 +201,49 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
 	const f0 = color(s.specular);
 	m.onBeforeCompile = (shader) => {
 		shader.uniforms.uF0 = { value: f0 };
-		shader.fragmentShader = shader.fragmentShader
-			.replace('#include <common>', '#include <common>\nuniform vec3 uF0;')
-			.replace(F0_LINE, 'material.specularColor = uF0;')
-			.replace(IBL_LINE, SPECULAR_ONLY_IBL);
+		shader.fragmentShader = withF0(
+			shader.fragmentShader
+				.replace('#include <common>', '#include <common>\nuniform vec3 uF0;')
+				.replace(IBL_LINE, SPECULAR_ONLY_IBL),
+			'uF0'
+		);
 	};
 	m.userData.noShadow = true;
+	return m;
+}
+
+async function organic(s: SubMaterialInfo): Promise<THREE.Material> {
+	const albedo = slot(s, 'TexSlot10') ?? slot(s, 'TexSlot3');
+	const m = new THREE.MeshPhysicalMaterial({ color: color(s.diffuse), metalness: 0, roughness: 1 });
+	if (albedo) m.map = await fetchTexture(albedo.file, 'color');
+	const nrm = slot(s, 'TexSlot2');
+	if (nrm && isNormal(nrm.file)) {
+		m.normalMap = await fetchTexture(nrm.file, 'normal');
+		m.normalScale.set(1, -1);
+		if (hasGloss(nrm.file)) m.roughnessMap = await fetchTexture(nrm.file, 'gloss');
+	}
+	const param = (k: string) => s.params.find(([key]) => key === k)?.[1];
+	const transmittance = (param('TransmittanceColor') ?? '').split(',').map(Number);
+	if (s.features.includes('TRANSMITTANCE_LIGHTING') && transmittance.length === 3 && transmittance.every(Number.isFinite)) {
+		m.emissive = color(transmittance as [number, number, number]).multiplyScalar(0.35);
+	}
+	const f0 = color(s.specular);
+	const glossMul = s.shininess / 255;
+	m.onBeforeCompile = (shader) => {
+		Object.assign(shader.uniforms, { uF0: { value: f0 }, uGlossMul: { value: glossMul } });
+		shader.fragmentShader = withF0(
+			shader.fragmentShader
+				.replace('#include <common>', '#include <common>\nuniform vec3 uF0;\nuniform float uGlossMul;')
+				.replace(
+					'#include <roughnessmap_fragment>',
+					m.roughnessMap
+						? 'float roughnessFactor = 1.0 - texture2D( roughnessMap, vRoughnessMapUv ).g * uGlossMul;'
+						: 'float roughnessFactor = 1.0 - uGlossMul;'
+				)
+				.replace(IBL_LINE, SPECULAR_ONLY_IBL),
+			'uF0'
+		);
+	};
 	return m;
 }
 
@@ -183,10 +253,32 @@ interface ResolvedLayer {
 	normalGloss: THREE.Texture | null;
 	color: THREE.Color;
 	f0: THREE.Color;
-	glossMul: number;
-	/** Palette glossiness 0..1; pulls the gloss towards 1 (0 = no palette). */
-	paletteGloss: number;
+	/** 0..1, times the texture gloss. */
+	gloss: number;
 	tiling: number;
+	/** Lighting-model weights: x cloth (ShadingModel 4), y clear coat (1, 3). */
+	model: THREE.Vector2;
+}
+
+/**
+ * The game's G-buffer flags ShadingModel 4 layers for its cloth lighting and
+ * 1 / 3 for a second lighting model that the `_clearcoat` layers use; drawn
+ * here as three's sheen and clear coat (approximations: the game's deferred
+ * lighting for them has not been read).
+ */
+function shadingModel(sub: SubMaterialInfo): THREE.Vector2 {
+	const sm = Number(sub.params.find(([k]) => k === 'ShadingModel')?.[1] ?? 0);
+	return new THREE.Vector2(sm === 4 ? 1 : 0, sm === 1 || sm === 3 ? 1 : 0);
+}
+
+/**
+ * What the MatLayer TintColor and a palette entry tint, by the layer's
+ * `TintMode`: 1 the colour, 2 the specular (metals, whose diffuse is near
+ * black), 0 both.
+ */
+function tintTargets(sub: SubMaterialInfo): { color: boolean; spec: boolean } {
+	const mode = Number(sub.params.find(([k]) => k === 'TintMode')?.[1] ?? 0);
+	return { color: mode !== 2, spec: mode !== 1 };
 }
 
 async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promise<ResolvedLayer> {
@@ -195,9 +287,9 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 		normalGloss: null,
 		color: new THREE.Color(0.5, 0.5, 0.5),
 		f0: new THREE.Color(0.04, 0.04, 0.04),
-		glossMul: 0.5,
-		paletteGloss: 0,
-		tiling: 1
+		gloss: 0.5,
+		tiling: 1,
+		model: new THREE.Vector2()
 	};
 	if (!l) return fallback;
 	const mtl = await loadMaterial(l.path);
@@ -206,30 +298,29 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 	const diffSlot = slot(sub, 'TexSlot1');
 	const nrmSlot = slot(sub, 'TexSlot2');
 	const entry = l.palette_tint >= 1 && l.palette_tint <= 3 ? palette?.[l.palette_tint - 1] : undefined;
-	// A conductor (dark diffuse, bright specular; StarBreaker's layer_metallic)
-	// keeps its own F0; only a dielectric takes the palette's spec as F0.
-	const metal = Math.max(...sub.diffuse) < 0.1 && Math.max(...sub.specular) > 0.25;
+	const tints = tintTargets(sub);
+	const tint = color(l.tint);
+	const layerColor = color(sub.diffuse);
+	if (tints.color) layerColor.multiply(tint);
+	if (entry && tints.color) layerColor.multiply(srgb(entry.tint));
+	const f0 = color(sub.specular);
+	if (tints.spec) f0.multiply(tint);
 	return {
 		diff: diffSlot ? await fetchTexture(diffSlot.file, 'color') : null,
 		normalGloss: nrmSlot ? await fetchTexture(nrmSlot.file, 'normal_gloss') : null,
-		color: color(sub.diffuse)
-			.multiply(color(l.tint))
-			.multiply(entry ? srgb(entry.tint) : new THREE.Color(1, 1, 1)),
-		f0: entry && !metal ? srgb(entry.spec) : color(sub.specular),
-		glossMul: (sub.shininess / 255) * l.gloss_mult,
-		// StarBreaker's layer surface: smoothness = mix(texture gloss, 1, palette glossiness).
-		paletteGloss: entry ? entry.gloss / 255 : 0,
-		tiling: l.uv_tiling || 1
+		color: layerColor,
+		f0: entry && tints.spec ? srgb(entry.spec) : f0,
+		gloss: Math.min(1, (sub.shininess / 255) * l.gloss_mult) * (entry ? entry.gloss / 255 : 1),
+		tiling: l.uv_tiling || 1,
+		model: shadingModel(sub)
 	};
 }
 
 const WHITE = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 WHITE.needsUpdate = true;
-const FLAT = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1);
 /** A flat `normal_gloss` texel: normal (0, 0), gloss 1. */
 const FLAT_GLOSS = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1);
 FLAT_GLOSS.needsUpdate = true;
-FLAT.needsUpdate = true;
 const BLACK = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
 BLACK.needsUpdate = true;
 
@@ -248,23 +339,42 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 	const decalSpec = (param('DiffuseDecalSpec') ?? '0.04,0.04,0.04').split(',').map(Number) as [number, number, number];
 	const macroSlot = [slot(s, 'TexSlot3'), slot(s, 'TexSlot2')].find((t) => t && isNormal(t.file));
 	const macro = macroSlot ? await fetchTexture(macroSlot.file, 'normal') : null;
-	// Slots: the base drawn where the blend map is black, then the layers the
-	// map's R, G, B channels mix in. With three or more layers the base is
-	// layer 3 and R, G, B pick layers 1, 2, 4; with fewer it is layer 1.
-	const base = layers.length >= 3 ? layers[2] : layers[0];
-	const byChannel = layers.length >= 3 ? [layers[0], layers[1], layers[3]] : [undefined, layers[1], undefined];
+	const halSlot = slot(s, 'TexSlot13');
+	const hal = halSlot ? await fetchTexture(halSlot.file, 'mask') : null;
+	const hueLut = hal ? await fetchHueLut() : null;
+	// Slots: the base drawn where the blend map is black (the last layer),
+	// then the layers the map's R, G, B channels mix in (layers 1, 2, 3).
+	const base = layers[layers.length - 1];
+	const byChannel = [0, 1, 2].map((i) => (i < layers.length - 1 ? layers[i] : undefined));
 	const slot4 = [base, ...byChannel.map((l) => l ?? base)];
 	const pad = (i: number) => slot4[i];
 
 	const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
 	// Layer 1 rides on three's own samplers (map, normalMap); they also turn
 	// on the UV varying and the tangent-space normal path. WebView2 allows 16
-	// samplers per shader, and shadows and the environment take three.
+	// samplers per shader; three takes three (environment, its DFG table, one
+	// shadow map), which leaves 13: 8 for the layers, the blend map, and the
+	// optional decal sheet, macro normal, HueAoLum map and hue LUT.
 	m.map = base.diff ?? WHITE;
 	m.normalMap = base.normalGloss ?? FLAT_GLOSS;
 	m.normalScale.set(1, -1);
+	if (slot4.some((l) => l.model.x > 0)) {
+		m.sheen = 1;
+		m.sheenRoughness = 0.6;
+	}
+	if (slot4.some((l) => l.model.y > 0)) {
+		m.clearcoat = 1;
+		m.clearcoatRoughness = 0.08;
+	}
+	// Optional samplers are declared only where used; each variant needs its
+	// own program cache key (three keys programs by this function's text).
+	const variant = [hal && hueLut ? 'SC_HAL' : '', decal ? 'SC_DECAL' : '', macro ? 'SC_MACRO' : ''].filter(Boolean);
+	const defines = variant.map((d) => `#define ${d}\n`).join('');
+	m.customProgramCacheKey = () => `layerBlend-${variant.join('-')}`;
 	m.onBeforeCompile = (shader) => {
 		Object.assign(shader.uniforms, {
+			uHal: { value: hal },
+			uHueLut: { value: hueLut },
 			uL1Diff: { value: pad(1).diff ?? WHITE },
 			uL2Diff: { value: pad(2).diff ?? WHITE },
 			uL3Diff: { value: pad(3).diff ?? WHITE },
@@ -280,15 +390,13 @@ async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.
 				[0, 1, 2, 3].flatMap((i) => [
 					[`uColor${i}`, { value: pad(i).color }],
 					[`uF0${i}`, { value: pad(i).f0 }],
-					[`uGlossMul${i}`, { value: pad(i).glossMul }],
-					[`uPalGloss${i}`, { value: pad(i).paletteGloss }],
-					[`uTile${i}`, { value: pad(i).tiling }]
+					[`uGloss${i}`, { value: pad(i).gloss }],
+					[`uTile${i}`, { value: pad(i).tiling }],
+					[`uModel${i}`, { value: pad(i).model }]
 				])
 			),
-			uParentGloss: { value: s.shininess / 255 },
-			uMacroNrm: { value: macro ?? FLAT },
-			uDecal: { value: decal ?? BLACK },
-			uHasDecal: { value: decal ? 1 : 0 },
+			uMacroNrm: { value: macro },
+			uDecal: { value: decal },
 			uDecalGloss: { value: decalGloss },
 			uDecalSpec: { value: color(decalSpec) }
 		});
@@ -313,20 +421,39 @@ vDecalUv = vec2( dU, dPacked - dU * 4096.0 ) / 4095.0 * 4.0 - 0.5;`
 			.replace(
 				'#include <common>',
 				`#include <common>
-uniform sampler2D uL1Diff, uL2Diff, uL3Diff, uL1NG, uL2NG, uL3NG, uBlend, uMacroNrm, uDecal;
+${defines}uniform sampler2D uL1Diff, uL2Diff, uL3Diff, uL1NG, uL2NG, uL3NG, uBlend;
+#ifdef SC_DECAL
+uniform sampler2D uDecal;
+#endif
+#ifdef SC_MACRO
+uniform sampler2D uMacroNrm;
+#endif
 uniform vec3 uBlendWeights, uDecalSpec;
 uniform vec3 uColor0, uColor1, uColor2, uColor3, uF00, uF01, uF02, uF03;
-uniform float uGlossMul0, uGlossMul1, uGlossMul2, uGlossMul3;
-uniform float uPalGloss0, uPalGloss1, uPalGloss2, uPalGloss3;
+uniform float uGloss0, uGloss1, uGloss2, uGloss3;
 uniform float uTile0, uTile1, uTile2, uTile3;
-uniform float uBlendTile, uHasDecal, uDecalGloss, uParentGloss;
+uniform vec2 uModel0, uModel1, uModel2, uModel3;
+uniform float uBlendTile, uDecalGloss;
+#ifdef SC_HAL
+uniform sampler2D uHal;
+uniform highp sampler3D uHueLut;
+// The LUT holds two 8^3 colour cubes stacked in depth: positive shifts in
+// the first half, negative in the second; |shift| blends towards it.
+vec3 hueShift( vec3 c, float shift ) {
+	vec3 uvw = c * 0.875 + 0.0625;
+	uvw.z = 0.5 * ( uvw.z + step( shift, -1e-6 ) );
+	return mix( c, texture( uHueLut, uvw ).rgb, abs( shift ) );
+}
+#endif
 varying vec2 vDecalUv;
 vec3 layerF0;
 float layerGloss;
 vec2 layerNormal;
+vec2 layerModel;
 float decalA;
-vec3 blendLayer( vec3 c, float w, vec4 diff, vec4 ng, vec3 color, vec3 f0, float glossMul, float palGloss ) {
-	layerGloss = mix( layerGloss, mix( ng.b * glossMul, 1.0, palGloss ), w );
+vec3 blendLayer( vec3 c, float w, vec4 diff, vec4 ng, vec3 color, vec3 f0, float gloss, vec2 model ) {
+	layerGloss = mix( layerGloss, ng.b * gloss, w );
+	layerModel = mix( layerModel, model, w );
 	layerF0 = mix( layerF0, f0, w );
 	layerNormal = mix( layerNormal, ng.rg, w );
 	return mix( c, diff.rgb * color, w );
@@ -337,36 +464,65 @@ vec3 blendLayer( vec3 c, float w, vec4 diff, vec4 ng, vec3 color, vec3 f0, float
 				`vec2 uv0 = vMapUv * uTile0;
 vec4 ng0 = texture2D( normalMap, uv0 );
 vec3 layerColor = texture2D( map, uv0 ).rgb * uColor0;
-layerGloss = mix( ng0.b * uGlossMul0, 1.0, uPalGloss0 );
+layerGloss = ng0.b * uGloss0;
 layerF0 = uF00;
 layerNormal = ng0.rg;
+layerModel = uModel0;
 vec3 bw = texture2D( uBlend, vMapUv * uBlendTile ).rgb * uBlendWeights;
 vec2 uv1 = vMapUv * uTile1;
 vec2 uv2 = vMapUv * uTile2;
 vec2 uv3 = vMapUv * uTile3;
-layerColor = blendLayer( layerColor, bw.r, texture2D( uL1Diff, uv1 ), texture2D( uL1NG, uv1 ), uColor1, uF01, uGlossMul1, uPalGloss1 );
-layerColor = blendLayer( layerColor, bw.g, texture2D( uL2Diff, uv2 ), texture2D( uL2NG, uv2 ), uColor2, uF02, uGlossMul2, uPalGloss2 );
-layerColor = blendLayer( layerColor, bw.b, texture2D( uL3Diff, uv3 ), texture2D( uL3NG, uv3 ), uColor3, uF03, uGlossMul3, uPalGloss3 );
+// Nested from the base up, so R outranks G outranks B: weights R,
+// G(1-R), B(1-R)(1-G) and (1-R)(1-G)(1-B) for the base.
+layerColor = blendLayer( layerColor, bw.b, texture2D( uL3Diff, uv3 ), texture2D( uL3NG, uv3 ), uColor3, uF03, uGloss3, uModel3 );
+layerColor = blendLayer( layerColor, bw.g, texture2D( uL2Diff, uv2 ), texture2D( uL2NG, uv2 ), uColor2, uF02, uGloss2, uModel2 );
+layerColor = blendLayer( layerColor, bw.r, texture2D( uL1Diff, uv1 ), texture2D( uL1NG, uv1 ), uColor1, uF01, uGloss1, uModel1 );
+#ifdef SC_HAL
+vec3 hal = texture2D( uHal, vMapUv ).rgb;
+float halLum = hal.z * 0.4 + 0.8;
+float halShift = clamp( ( hal.x - 0.5 ) * 2.0, -1.0, 1.0 );
+layerColor = hueShift( clamp( layerColor * halLum, 0.0, 1.0 ), halShift ) * hal.y;
+layerF0 = hueShift( clamp( layerF0 * halLum, 0.0, 1.0 ), halShift ) * hal.y;
+#endif
 diffuseColor.rgb *= layerColor;
+decalA = 0.0;
+#ifdef SC_DECAL
 float inDiffuse = step( 2.0, vDecalUv.x ) * ( 1.0 - step( 3.0, vDecalUv.x ) );
 float inStencil = step( 2.0, vDecalUv.y ) * ( 1.0 - step( 3.0, vDecalUv.y ) );
 vec4 decalTex = texture2D( uDecal, vec2( vDecalUv.x - 2.0, vDecalUv.y ) );
-decalA = uHasDecal * decalTex.a * inDiffuse * ( 1.0 - inStencil );
-diffuseColor.rgb = mix( diffuseColor.rgb, decalTex.rgb, decalA );`
+decalA = decalTex.a * inDiffuse * ( 1.0 - inStencil );
+diffuseColor.rgb = mix( diffuseColor.rgb, decalTex.rgb, decalA );
+#endif`
 			)
 			.replace(
 				'#include <roughnessmap_fragment>',
-				`float roughnessFactor = mix( 1.0 - layerGloss * uParentGloss, 1.0 - uDecalGloss, decalA );`
+				`float roughnessFactor = mix( 1.0 - layerGloss, 1.0 - uDecalGloss, decalA );`
 			)
-			.replace(F0_LINE, 'material.specularColor = mix( layerF0, uDecalSpec, decalA );')
-			.replace(IBL_LINE, SPECULAR_ONLY_IBL)
-			.replace(
-				'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
-				`vec2 nxy = layerNormal * 2.0 - 1.0;
+			.replace(IBL_LINE, SPECULAR_ONLY_IBL);
+		shader.fragmentShader = patchChunk(
+			shader.fragmentShader,
+			'normal_fragment_maps',
+			MAP_N_LINE,
+			`vec2 nxy = layerNormal * 2.0 - 1.0;
 vec3 nLayer = vec3( nxy, sqrt( max( 1.0 - dot( nxy, nxy ), 0.0 ) ) );
+#ifdef SC_MACRO
 vec3 nMacro = texture2D( uMacroNrm, vMapUv ).xyz * 2.0 - 1.0;
-vec3 mapN = normalize( vec3( nMacro.xy + nLayer.xy, nMacro.z * nLayer.z ) );`
-			);
+vec3 mapN = normalize( vec3( nMacro.xy + nLayer.xy, nMacro.z * nLayer.z ) );
+#else
+vec3 mapN = nLayer;
+#endif`
+		);
+		shader.fragmentShader = withF0(
+			shader.fragmentShader,
+			'mix( layerF0, uDecalSpec, decalA ) * ( 1.0 - layerModel.x * ( 1.0 - decalA ) )',
+			// Cloth trades the specular lobe for a soft sheen of its own colour.
+			`#ifdef USE_SHEEN
+material.sheenColor = layerModel.x * ( 1.0 - decalA ) * sqrt( layerColor ) * 0.5;
+#endif
+#ifdef USE_CLEARCOAT
+material.clearcoat = layerModel.y * ( 1.0 - decalA );
+#endif`
+		);
 	};
 	return m;
 }

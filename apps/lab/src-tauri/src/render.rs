@@ -165,6 +165,15 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
             )
         })
         .collect();
+    if uri.path() == "/hue_lut" {
+        let v = state.assets()?.hue_lut().map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(12 + v.data.len());
+        for n in [v.width, v.height, v.depth] {
+            out.extend(n.to_le_bytes());
+        }
+        out.extend_from_slice(&v.data);
+        return Ok(out);
+    }
     let path = query.get("path").ok_or("missing path")?;
     match uri.path() {
         "/model" => state
@@ -189,9 +198,10 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
                 .assets()?
                 .texture(path, kind, max)
                 .map_err(|e| e.to_string())?;
-            let mut out = Vec::with_capacity(8 + t.data.len());
+            let mut out = Vec::with_capacity(12 + t.data.len());
             out.extend(t.width.to_le_bytes());
             out.extend(t.height.to_le_bytes());
+            out.extend(u32::from(t.srgb).to_le_bytes());
             out.extend_from_slice(&t.data);
             Ok(out)
         }
