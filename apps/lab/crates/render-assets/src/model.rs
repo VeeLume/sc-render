@@ -55,7 +55,7 @@ impl Model {
         let n = g.positions.len();
         let mut buf: Vec<u8> = Vec::new();
         let section = |buf: &mut Vec<u8>, bytes: &mut dyn FnMut(&mut Vec<u8>)| -> u32 {
-            while buf.len() % 4 != 0 {
+            while !buf.len().is_multiple_of(4) {
                 buf.push(0);
             }
             let at = buf.len() as u32;

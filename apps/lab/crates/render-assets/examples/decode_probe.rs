@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(t) => {
                     let mut lo = [255u8; 4];
                     let mut hi = [0u8; 4];
-                    for px in t.data.chunks_exact(4) {
+                    for px in t.data.as_chunks::<4>().0 {
                         for c in 0..4 {
                             lo[c] = lo[c].min(px[c]);
                             hi[c] = hi[c].max(px[c]);

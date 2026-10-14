@@ -32,7 +32,7 @@ pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) 
         TextureKind::Color => decode_dds(&t.dds, max_size),
         TextureKind::Normal => {
             let mut img = decode_dds(&t.dds, max_size)?;
-            for px in img.data.chunks_exact_mut(4) {
+            for px in img.data.as_chunks_mut::<4>().0 {
                 let x = px[0] as f32 / 255.0 * 2.0 - 1.0;
                 let y = px[1] as f32 / 255.0 * 2.0 - 1.0;
                 let z = (1.0 - x * x - y * y).max(0.0).sqrt();
@@ -46,9 +46,9 @@ pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) 
                 Some(a) => (decode_dds(a, max_size)?, true),
                 None => (decode_dds(&t.dds, max_size)?, false),
             };
-            for px in img.data.chunks_exact_mut(4) {
+            for px in img.data.as_chunks_mut::<4>().0 {
                 let g = if from_alpha_file { px[0] } else { px[3] };
-                px.copy_from_slice(&[g, g, g, 255]);
+                *px = [g, g, g, 255];
             }
             Ok(img)
         }
