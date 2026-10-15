@@ -172,12 +172,8 @@ export type AppSettings = {
  */
 onboarding_completed: boolean }
 /**
- * The character body an item is shown for. Armor and clothing select their
- * geometry variant by it (`Female` / `Male`), then by
- * `inventoryStoredEntity`: the item as stored, a static `_prop.cgf` instead
- * of the packaging crate. The game binds the tag at runtime from the
- * player's character; tags only pick variants that ask for them, so other
- * items are unaffected.
+ * The character body an item is shown for (armor and clothing pick their
+ * variant by it); `sc_items_visuals::Body` with the app's IPC types.
  */
 export type Body = "Female" | "Male"
 /**

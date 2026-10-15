@@ -1,17 +1,18 @@
 //! Items as render scenes, from the DataCore: [`Catalog`] parses it once and
 //! turns an item (and what is attached to it) into a [`SceneItem`], the tree
-//! the cell renderer draws. The recipe comes from sc-holotable
-//! (`sc_items_visuals`); this module resolves `.cdf` assemblies and applies
-//! the presentation choices that are ours, not the game's (the fallback pose).
+//! the cell renderer draws. The assembly is sc-holotable's
+//! (`Visuals::scene`); this module adds the presentation choices that are
+//! ours, not the game's (the fallback pose), and the names the log shows.
 
 use std::collections::HashMap;
 
 use sc_extract::{
-    AssetConfig, AssetData, AttachmentKind, CharacterDefinition, CrcIndex, Datacore, Guid,
-    RecordCollection,
+    AssetConfig, AssetData, CharacterDefinition, CrcIndex, Datacore, Guid, RecordCollection,
 };
 use sc_items::Items;
-use sc_items_visuals::{InventoryView, LoadoutEntry, Palette, Palettes, Visual, Visuals};
+use sc_items_visuals::{
+    Attached, InventoryView, Palette, Palettes, Part, Scene, SceneNote, Visual, Visuals,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{Assets, Error, Result};
@@ -29,12 +30,8 @@ pub const FALLBACK_ELEVATION: f32 = 8.0;
 /// standing figure looks as if it leaned back.
 pub const CHARACTER_OFFSET: [f32; 3] = [0.0, 200.0, 0.0];
 
-/// The character body an item is shown for. Armor and clothing select their
-/// geometry variant by it (`Female` / `Male`), then by
-/// `inventoryStoredEntity`: the item as stored, a static `_prop.cgf` instead
-/// of the packaging crate. The game binds the tag at runtime from the
-/// player's character; tags only pick variants that ask for them, so other
-/// items are unaffected.
+/// The character body an item is shown for (armor and clothing pick their
+/// variant by it); `sc_items_visuals::Body` with the app's IPC types.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum Body {
@@ -43,70 +40,14 @@ pub enum Body {
     Male,
 }
 
-impl Body {
-    /// The geometry tags an inventory cell selects variants by.
-    pub fn tags(self) -> &'static [&'static str] {
-        match self {
-            Body::Female => &["Female", "inventoryStoredEntity"],
-            Body::Male => &["Male", "inventoryStoredEntity"],
-        }
-    }
-
-    /// The tags of an item worn on a body: the body-fitted variant, not the
-    /// stored prop.
-    pub fn worn_tags(self) -> &'static [&'static str] {
-        match self {
-            Body::Female => &["Female"],
-            Body::Male => &["Male"],
+impl From<Body> for sc_items_visuals::Body {
+    fn from(b: Body) -> Self {
+        match b {
+            Body::Female => Self::Female,
+            Body::Male => Self::Male,
         }
     }
 }
-
-/// How a part is shown: for which body, and whether it is worn (skinned
-/// onto a body, directly or through a parent) and so needs the body-fitted
-/// geometry rather than the stored prop.
-#[derive(Debug, Clone, Copy)]
-struct Fit<'a> {
-    body: Body,
-    worn: bool,
-    /// The parent port's `Flags`, which also name variants (`Protos_Head`
-    /// selects a player head's eyes and teeth).
-    port_flags: &'a str,
-}
-
-impl<'a> Fit<'a> {
-    fn tags(self) -> Vec<&'a str> {
-        let base = if self.worn {
-            self.body.worn_tags()
-        } else {
-            self.body.tags()
-        };
-        base.iter().copied().chain([self.port_flags]).collect()
-    }
-}
-
-/// Give every skinned part its parent's skeleton when it has none of its
-/// own: a worn armor core's ports name the body's bones
-/// (`magazine_attach_1_override`), and the body takes the player actor's.
-fn share_skeleton(part: &mut ScenePart, inherited: Option<&str>) {
-    if part.skeleton.is_none() {
-        part.skeleton = inherited.map(str::to_string);
-    }
-    let skeleton = part.skeleton.clone();
-    for a in &mut part.attachments {
-        // Only skinned children (empty bone) share the skeleton.
-        let pass = if a.bone.is_empty() {
-            skeleton.as_deref()
-        } else {
-            None
-        };
-        share_skeleton(&mut a.part, pass);
-    }
-}
-
-/// Nesting limit for attached items (player → body → armor core → backpack
-/// → rifle → scope is five).
-const MAX_DEPTH: usize = 10;
 
 /// Everything the scenes are built from.
 pub struct Catalog {
@@ -363,22 +304,22 @@ impl Catalog {
             .visuals
             .get(&guid)
             .ok_or_else(|| Error::Catalog(format!("{guid} has no geometry")))?;
-        let mut notes = Vec::new();
-        let fit = Fit {
-            body,
-            worn: false,
-            port_flags: "",
-        };
-        let mut root = self.part(assets, &guid, children, fit, 0, &mut notes)?;
-        share_skeleton(&mut root, None);
-        let actor = root.pieces.is_empty()
-            && root
-                .skeleton
-                .as_deref()
-                .is_some_and(|s| s.to_lowercase().ends_with(".chr"));
+        let attached = children.map(attached);
+        let scene: Scene = self
+            .visuals
+            .scene(
+                &self.palettes,
+                &guid,
+                attached.as_deref(),
+                body.into(),
+                |path| CharacterDefinition::read(assets.source(), path).map_err(|e| e.to_string()),
+            )
+            .ok_or_else(|| Error::Catalog(format!("{guid}: no geometry path")))?;
+        let mut notes: Vec<String> = scene.notes.iter().map(|n| self.note(n)).collect();
+        let root = self.scene_part(&scene.root, "");
         let (offset, elevation) = match self.view.orientation(item, visual) {
             Some(o) => (o, 0.0),
-            None if actor => (CHARACTER_OFFSET, 0.0),
+            None if scene.is_character() => (CHARACTER_OFFSET, 0.0),
             None => {
                 notes.push("no inventory orientation entry: fallback pose".into());
                 (FALLBACK_OFFSET, FALLBACK_ELEVATION)
@@ -419,156 +360,66 @@ impl Catalog {
         })
     }
 
-    fn part(
-        &self,
-        assets: &Assets,
-        guid: &Guid,
-        children: Option<&[ChildSpec]>,
-        fit: Fit,
-        depth: usize,
-        notes: &mut Vec<String>,
-    ) -> Result<ScenePart> {
-        let record = self.records.get(guid).cloned().unwrap_or_default();
-        let visual = self
-            .visuals
-            .get(guid)
-            .ok_or_else(|| Error::Catalog(format!("{record}: no geometry")))?;
-        let look = visual
-            .look(&fit.tags())
-            .ok_or_else(|| Error::Catalog(format!("{record}: no geometry path")))?;
-        let palette = look
-            .palette
-            .as_ref()
-            .and_then(|p| self.palettes.resolve(p))
-            .map(palette_entries);
-
-        let mut part = ScenePart {
-            record: record.clone(),
-            guid: guid.to_string(),
-            pieces: Vec::new(),
-            skeleton: None,
-            attachments: Vec::new(),
-            palette,
+    /// The renderer's view of a part: names for the log, palette as bytes,
+    /// a skinned attachment's bone empty.
+    fn scene_part(&self, part: &Part, parent: &str) -> ScenePart {
+        let record = match (&part.item, &part.cdf_attachment) {
+            (Some(g), _) => self
+                .records
+                .get(g)
+                .cloned()
+                .unwrap_or_else(|| g.to_string()),
+            (None, Some(a)) => format!("{parent} / {a}"),
+            (None, None) => parent.to_string(),
         };
-        if look.geometry.to_ascii_lowercase().ends_with(".cdf") {
-            let cdf = CharacterDefinition::read(assets.source(), &look.geometry)?;
-            // A skin's material override replaces the weapon's own material,
-            // not a part's own. The weapon's own parts carry a material from the .cdf's folder;
-            // a part from elsewhere (a cartridge from `ammo/`) keeps its own,
-            // as does a part without one (its geometry's MtlName).
-            let folder = parent_folder(&look.geometry);
-            let material = |m: &Option<String>| match (&look.material, m) {
-                (Some(skin), Some(m)) if parent_folder(m) == folder => Some(skin.clone()),
-                _ => m.clone(),
-            };
-            if cdf.model.to_ascii_lowercase().ends_with(".chr") {
-                part.skeleton = Some(cdf.model.clone());
-            } else {
-                part.pieces.push(ScenePiece {
-                    geometry: cdf.model.clone(),
-                    material: look.material.clone(),
-                });
-            }
-            for a in &cdf.attachments {
-                let Some(binding) = &a.binding else { continue };
-                let piece = ScenePiece {
-                    geometry: binding.clone(),
-                    material: material(&a.material),
-                };
-                match (&a.kind, &a.bone) {
-                    (AttachmentKind::Skin, _) => part.pieces.push(piece),
-                    (AttachmentKind::Bone, Some(bone)) => part.attachments.push(SceneAttachment {
-                        bone: bone.clone(),
-                        offset_position: a.position,
-                        // `.cdf` RelRotation is (w, x, y, z).
-                        offset_rotation: [
-                            a.rotation[1],
-                            a.rotation[2],
-                            a.rotation[3],
-                            a.rotation[0],
-                        ],
-                        item_helper: None,
-                        part: ScenePart {
-                            record: format!("{record} / {}", a.name),
-                            guid: String::new(),
-                            pieces: vec![piece],
-                            skeleton: None,
-                            attachments: Vec::new(),
-                            palette: part.palette,
-                        },
-                    }),
-                    _ => notes.push(format!(
-                        "{record}: attachment {} ({:?}) skipped",
-                        a.name, a.kind
-                    )),
-                }
-            }
-        } else if look.geometry.to_ascii_lowercase().ends_with(".chr") {
-            // A bare skeleton (the player actor): nothing to draw itself;
-            // its skinned children (the body) take its bones.
-            part.skeleton = Some(look.geometry.clone());
-        } else {
-            part.pieces.push(ScenePiece {
-                geometry: look.geometry.clone(),
-                material: look.material.clone(),
-            });
+        ScenePart {
+            guid: part.item.map(|g| g.to_string()).unwrap_or_default(),
+            pieces: part
+                .pieces
+                .iter()
+                .map(|p| ScenePiece {
+                    geometry: p.geometry.clone(),
+                    material: p.material.clone(),
+                })
+                .collect(),
+            skeleton: part.skeleton.clone(),
+            attachments: part
+                .attachments
+                .iter()
+                .map(|a| SceneAttachment {
+                    bone: a.bone.clone().unwrap_or_default(),
+                    offset_position: a.offset.position,
+                    offset_rotation: a.offset.rotation,
+                    item_helper: a.item_helper.clone(),
+                    part: self.scene_part(&a.part, &record),
+                })
+                .collect(),
+            palette: part.palette.as_ref().map(palette_entries),
+            record,
         }
+    }
 
-        if depth >= MAX_DEPTH {
-            notes.push(format!(
-                "{record}: nesting deeper than {MAX_DEPTH}, children dropped"
-            ));
-            return Ok(part);
-        }
-        let defaults;
-        let children: &[ChildSpec] = match children {
-            Some(c) => c,
-            None => {
-                defaults = default_children(&visual.default_loadout);
-                &defaults
-            }
+    fn note(&self, n: &SceneNote) -> String {
+        let name = |g: &Guid| {
+            self.records
+                .get(g)
+                .cloned()
+                .unwrap_or_else(|| g.to_string())
         };
-        for c in children {
-            let child = match parse_guid(&c.guid) {
-                Ok(g) if self.visuals.get(&g).is_some() => g,
-                _ => continue, // not drawn (sensors, controllers)
-            };
-            // A skinned child shares this item's skeleton: in bind pose it
-            // sits at this item's origin (empty bone).
-            let Some((port, helper)) = visual.port(&c.port).and_then(|p| {
-                let helper = if p.skinned {
-                    String::new()
-                } else {
-                    p.helper.clone()?
-                };
-                Some((p, helper))
-            }) else {
-                notes.push(format!("{record}: no port {} with a helper", c.port));
-                continue;
-            };
-            match self.part(
-                assets,
-                &child,
-                c.children.as_deref(),
-                Fit {
-                    worn: fit.worn || port.skinned,
-                    port_flags: &port.flags,
-                    ..fit
-                },
-                depth + 1,
-                notes,
-            ) {
-                Ok(p) => part.attachments.push(SceneAttachment {
-                    bone: helper,
-                    offset_position: port.offset.position,
-                    offset_rotation: ang3_quaternion(port.offset.rotation),
-                    item_helper: port.item_offset_helper.clone(),
-                    part: p,
-                }),
-                Err(e) => notes.push(format!("{record}: {} skipped: {e}", c.port)),
+        match n {
+            SceneNote::NoGeometry { item } => format!("{}: no geometry for these tags", name(item)),
+            SceneNote::CdfUnreadable { path, reason } => format!("{path}: {reason}"),
+            SceneNote::CdfAttachmentSkipped { path, attachment } => {
+                format!("{path}: attachment {attachment} skipped")
             }
+            SceneNote::NoPort { item, port } => {
+                format!("{}: no port {port} with a helper", name(item))
+            }
+            SceneNote::TooDeep { item } => {
+                format!("{}: nested too deep, children dropped", name(item))
+            }
+            other => format!("{other:?}"),
         }
-        Ok(part)
     }
 
     /// Resolve a Starlume `inventory.json` dump: class CRCs to items, port
@@ -661,37 +512,17 @@ fn palette_entries(p: &Palette) -> [ScenePaletteEntry; 3] {
     })
 }
 
-fn default_children(loadout: &[LoadoutEntry]) -> Vec<ChildSpec> {
-    loadout
+/// An inventory dump's attachments as holotable's; entries whose GUID does
+/// not parse are left out.
+fn attached(children: &[ChildSpec]) -> Vec<Attached> {
+    children
         .iter()
-        .filter_map(|e| {
-            Some(ChildSpec {
-                port: e.port.clone(),
-                guid: e.item?.to_string(),
-                children: (!e.children.is_empty()).then(|| default_children(&e.children)),
+        .filter_map(|c| {
+            Some(Attached {
+                port: c.port.clone(),
+                item: c.guid.parse().ok()?,
+                children: c.children.as_deref().map(attached),
             })
         })
         .collect()
-}
-
-/// CryEngine `Ang3` degrees (rotation = Rz · Ry · Rx) as a quaternion
-/// `(x, y, z, w)`.
-fn ang3_quaternion([x, y, z]: [f32; 3]) -> [f32; 4] {
-    let (sx, cx) = (x.to_radians() / 2.0).sin_cos();
-    let (sy, cy) = (y.to_radians() / 2.0).sin_cos();
-    let (sz, cz) = (z.to_radians() / 2.0).sin_cos();
-    [
-        sx * cy * cz - cx * sy * sz,
-        cx * sy * cz + sx * cy * sz,
-        cx * cy * sz - sx * sy * cz,
-        cx * cy * cz + sx * sy * sz,
-    ]
-}
-
-/// A p4k path's folder, lower-cased, without a `Data/` prefix.
-fn parent_folder(path: &str) -> String {
-    let p = path.replace('\\', "/").to_ascii_lowercase();
-    let p = p.strip_prefix("data/").unwrap_or(&p);
-    p.rsplit_once('/')
-        .map_or(String::new(), |(dir, _)| dir.to_string())
 }
