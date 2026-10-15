@@ -116,6 +116,32 @@
 		if (res.status === 'ok') log = [...log, `snapshot ${res.data}`];
 	}
 
+	/** Drag on the cell turns the item; a double click restores the pose. */
+	let drag: { id: number; x: number; y: number } | null = null;
+	type AxisLock = 'free' | 'turn' | 'tilt';
+	const AXIS_LOCKS: { value: AxisLock; label: string; hint: string }[] = [
+		{ value: 'free', label: 'Free', hint: 'Drag in any direction' },
+		{ value: 'turn', label: 'Turn', hint: 'Only spin about the vertical (horizontal drag)' },
+		{ value: 'tilt', label: 'Tilt', hint: 'Only tip towards or away (vertical drag)' }
+	];
+	let axisLock = $state<AxisLock>('free');
+	function onPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+		canvas.setPointerCapture(e.pointerId);
+	}
+	function onPointerMove(e: PointerEvent) {
+		if (!drag || e.pointerId !== drag.id) return;
+		const dx = axisLock === 'tilt' ? 0 : e.clientX - drag.x;
+		const dy = axisLock === 'turn' ? 0 : e.clientY - drag.y;
+		cell?.rotate(dx, dy);
+		drag.x = e.clientX;
+		drag.y = e.clientY;
+	}
+	function onPointerUp(e: PointerEvent) {
+		if (drag?.id === e.pointerId) drag = null;
+	}
+
 	function relight() {
 		if (!cell || !current) return;
 		cell.setLights(current, { lightScale, ambient, toneMap, rimScale, env });
@@ -261,10 +287,36 @@
 	</aside>
 	<main class="min-w-0 flex-1 overflow-y-auto">
 		<div class="relative rounded-xl border bg-[#1c2632]" style="max-width: {640 * aspect()}px">
-			<canvas bind:this={canvas} class="block w-full" style="aspect-ratio: {aspect()}"></canvas>
+			<canvas
+				bind:this={canvas}
+				class="block w-full cursor-grab touch-none active:cursor-grabbing"
+				style="aspect-ratio: {aspect()}"
+				title="Drag to turn the item, double-click to reset"
+				onpointerdown={onPointerDown}
+				onpointermove={onPointerMove}
+				onpointerup={onPointerUp}
+				onpointercancel={onPointerUp}
+				ondblclick={() => cell?.resetRotation()}
+			></canvas>
 			{#if busy}<div class="absolute inset-0 grid place-items-center text-sm text-muted-foreground">loading…</div>{/if}
 		</div>
-		{#if current}<h2 class="mt-3 text-sm font-medium">{current.label}</h2>{/if}
+		{#if current}
+			<h2 class="mt-3 text-sm font-medium">{current.label}</h2>
+			<div class="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+				<span>Drag to turn, double-click to reset.</span>
+				<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Rotation axis">
+					{#each AXIS_LOCKS as lock (lock.value)}
+						<button
+							role="radio"
+							aria-checked={axisLock === lock.value}
+							title={lock.hint}
+							class="px-2 py-0.5 {axisLock === lock.value ? 'bg-muted text-foreground' : 'hover:bg-muted/50'}"
+							onclick={() => (axisLock = lock.value)}>{lock.label}</button
+						>
+					{/each}
+				</div>
+			</div>
+		{/if}
 		{#if error}<pre class="mt-3 text-xs whitespace-pre-wrap text-red-400">{error}</pre>{/if}
 		<pre class="mt-3 text-xs whitespace-pre-wrap text-muted-foreground">{log.join('\n')}</pre>
 	</main>

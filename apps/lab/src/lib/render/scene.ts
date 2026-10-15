@@ -73,6 +73,8 @@ export class Cell {
 	readonly scene = new THREE.Scene();
 	readonly camera: THREE.PerspectiveCamera;
 	private item: THREE.Object3D | null = null;
+	/** Turntable around the item's bounds centre; identity is the game's pose. */
+	private turn: THREE.Group | null = null;
 	/** Bumped per `show`; a render that finishes after a newer one started is dropped. */
 	private generation = 0;
 	private lights: THREE.Object3D[] = [];
@@ -162,8 +164,13 @@ export class Cell {
 			return log;
 		}
 		if (this.item) this.scene.remove(this.item);
-		this.item = pivot;
-		this.scene.add(pivot);
+		// The pivot puts the bounds centre at the origin, so the turntable
+		// turns the item in place.
+		const turn = new THREE.Group();
+		turn.add(pivot);
+		this.turn = turn;
+		this.item = turn;
+		this.scene.add(turn);
 
 		this.setLights(fx, opts);
 		this.render();
@@ -208,6 +215,31 @@ export class Cell {
 		this.scene.environmentRotation.set(Math.PI, 0, 0);
 		this.scene.environmentIntensity = opts.env ?? 0;
 		this.renderer.toneMapping = TONE_MAPS[opts.toneMap ?? 'linear'];
+	}
+
+	/**
+	 * Turn the item by a pointer drag of `dx`, `dy` pixels: right turns its
+	 * front to the right (about the screen's vertical), down tips it towards
+	 * the bottom. The light rig stays put.
+	 */
+	rotate(dx: number, dy: number) {
+		if (!this.turn) return;
+		const perPixel = Math.PI / this.canvas.clientHeight;
+		this.camera.updateMatrixWorld();
+		const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
+		const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+		const q = new THREE.Quaternion()
+			.setFromAxisAngle(up, dx * perPixel)
+			.multiply(new THREE.Quaternion().setFromAxisAngle(right, dy * perPixel));
+		this.turn.quaternion.premultiply(q);
+		this.render();
+	}
+
+	/** Back to the game's pose. */
+	resetRotation() {
+		if (!this.turn) return;
+		this.turn.quaternion.identity();
+		this.render();
 	}
 
 	render() {
