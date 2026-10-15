@@ -120,6 +120,28 @@ async loadCharacter(path: string | null) : Promise<Result<InventoryNode | null, 
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * The install's saved characters (`.chf`), newest first.
+ */
+async listCharacterFiles() : Promise<Result<CharacterFile[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_character_files") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * A saved character's colour overrides (hair and brow dye, eye and skin).
+ */
+async characterLook(path: string) : Promise<Result<CharacterLook, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("character_look", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -155,6 +177,22 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
  * Quaternion `(x, y, z, w)`.
  */
 rotation: [number, number, number, number] }
+/**
+ * A saved character file.
+ */
+export type CharacterFile = { 
+/**
+ * File name without `.chf`.
+ */
+name: string; path: string; 
+/**
+ * Last modified, seconds since the Unix epoch.
+ */
+modified: number }
+/**
+ * A character's colour overrides, one entry per item that has any.
+ */
+export type CharacterLook = { parts: PartLook[] }
 /**
  * An attached item, as an inventory dump reports it.
  */
@@ -199,6 +237,26 @@ export type NodeInfo = { name: string; parent: number | null;
  * 3 × 4 row-major, relative to the parent.
  */
 transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
+/**
+ * Colour overrides for one item of a character.
+ */
+export type PartLook = { 
+/**
+ * The item's record GUID (as in the inventory dump and scene parts).
+ */
+item: string; 
+/**
+ * The `.chf` material the values come from (`HairDyeMaterial`).
+ */
+material: string; 
+/**
+ * Named numbers (`DyeAmount`, `BaseMelanin`).
+ */
+params: ([string, number])[]; 
+/**
+ * Named colours, sRGB bytes (`HairDyeColor1`, `EyeColor`).
+ */
+colors: ([string, [number, number, number]])[] }
 export type SceneAttachment = { 
 /**
  * Bone or geometry node; empty for a part skinned to this one's
@@ -249,6 +307,10 @@ export type ScenePaletteEntry = { tint: [number, number, number]; spec: [number,
  * One item's geometry and what hangs on it.
  */
 export type ScenePart = { record: string; 
+/**
+ * The item's record GUID; empty for a `.cdf` part that is no item.
+ */
+guid: string; 
 /**
  * Drawn at the item origin.
  */

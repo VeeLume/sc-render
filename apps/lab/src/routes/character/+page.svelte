@@ -3,7 +3,14 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Cell } from '$lib/render/scene';
 	import { AXIS_LOCKS, VIEW_HINT, bindWheelZoom, viewControls, type AxisLock } from '$lib/render/viewControls';
-	import { commands, type Body, type ChildSpec, type InventoryNode } from '$lib/bindings';
+	import {
+		commands,
+		type Body,
+		type CharacterFile,
+		type ChildSpec,
+		type InventoryNode,
+		type PartLook
+	} from '$lib/bindings';
 
 	/**
 	 * The player's character from the inventory dump (actor, body, head, hair,
@@ -18,6 +25,22 @@
 	let error = $state<string | null>(null);
 	let log = $state<string[]>([]);
 	let showLog = $state(false);
+	/** Saved characters (`.chf`) to take hair, brow, eye and skin colours from. */
+	let characterFiles = $state<CharacterFile[]>([]);
+	/** The chosen file's path; empty for the materials' own colours. */
+	let lookPath = $state('');
+	let looks = new Map<string, PartLook>();
+
+	async function loadLook() {
+		looks = new Map();
+		if (lookPath) {
+			const res = await commands.characterLook(lookPath);
+			if (res.status === 'ok') looks = new Map(res.data.parts.map((p) => [p.item, p]));
+			else error = res.error;
+		}
+		scheduleRender();
+	}
+
 	/** Hidden nodes, by GEID. */
 	const hidden = new SvelteSet<string>();
 	/** Collapsed tree branches, by GEID. */
@@ -46,7 +69,7 @@
 			if (res.status !== 'ok') throw new Error(res.error);
 			if (mine !== request) return;
 			// Frame the figure in this view, not in an inventory cell.
-			log = await cell.show({ ...res.data, aspect: VIEW_ASPECT }, LIGHTS, rendered);
+			log = await cell.show({ ...res.data, aspect: VIEW_ASPECT }, LIGHTS, rendered, looks);
 			rendered = true;
 		} catch (e) {
 			error = String(e);
@@ -113,7 +136,12 @@
 				error = 'The inventory dump has no player character.';
 				return;
 			}
-			await render();
+			const files = await commands.listCharacterFiles();
+			if (files.status === 'ok') {
+				characterFiles = files.data;
+				lookPath = files.data[0]?.path ?? '';
+			}
+			await loadLook();
 		})();
 		return () => {
 			window.removeEventListener('resize', fit);
@@ -200,6 +228,15 @@
 					>
 				{/each}
 			</div>
+			<label class="flex items-center gap-1.5">
+				Colours
+				<select class="rounded border bg-transparent px-1.5 py-0.5" bind:value={lookPath} onchange={loadLook}>
+					<option value="">Material defaults</option>
+					{#each characterFiles as f (f.path)}
+						<option value={f.path}>{f.name} ({new Date(f.modified * 1000).toLocaleDateString()})</option>
+					{/each}
+				</select>
+			</label>
 			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Body">
 				{#each ['Female', 'Male'] as const as b (b)}
 					<button

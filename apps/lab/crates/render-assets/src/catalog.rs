@@ -150,6 +150,8 @@ pub struct SceneItem {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScenePart {
     pub record: String,
+    /// The item's record GUID; empty for a `.cdf` part that is no item.
+    pub guid: String,
     /// Drawn at the item origin.
     pub pieces: Vec<ScenePiece>,
     /// `.chr` whose bones the attachments name; without one they name
@@ -425,6 +427,7 @@ impl Catalog {
 
         let mut part = ScenePart {
             record: record.clone(),
+            guid: guid.to_string(),
             pieces: Vec::new(),
             skeleton: None,
             attachments: Vec::new(),
@@ -470,6 +473,7 @@ impl Catalog {
                         item_helper: None,
                         part: ScenePart {
                             record: format!("{record} / {}", a.name),
+                            guid: String::new(),
                             pieces: vec![piece],
                             skeleton: None,
                             attachments: Vec::new(),

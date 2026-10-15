@@ -63,7 +63,7 @@
 //                  wear, and the game then draws the base layers only);
 //                  HEIGHT_MAP, vertex AO and the detail maps are not modelled.
 import * as THREE from 'three';
-import { commands, type LayerInfo, type MaterialInfo, type SubMaterialInfo } from '$lib/bindings';
+import { commands, type LayerInfo, type MaterialInfo, type PartLook, type SubMaterialInfo } from '$lib/bindings';
 import { fetchHueLut, fetchTexture } from './protocol';
 import type { Palette } from './scene';
 
@@ -148,12 +148,12 @@ function srgb(c: [number, number, number]): THREE.Color {
 }
 
 /** One submaterial; `null` for parts that are not drawn (proxies). */
-export async function buildMaterial(s: SubMaterialInfo, palette?: Palette): Promise<THREE.Material | null> {
+export async function buildMaterial(s: SubMaterialInfo, palette?: Palette, look?: PartLook): Promise<THREE.Material | null> {
 	if (NO_DRAW.has(s.shader) || s.name.startsWith('$')) return null;
 	if (s.shader.startsWith('LayerBlend')) return layerBlend(s, palette);
 	if (s.shader === 'GlassPBR') return glass(s);
 	if (s.shader === 'Organic') return organic(s);
-	if (s.shader === 'HairPBR') return hair(s);
+	if (s.shader === 'HairPBR') return hair(s, look);
 	return illum(s);
 }
 
@@ -239,12 +239,24 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
 	return m;
 }
 
-async function hair(s: SubMaterialInfo): Promise<THREE.Material> {
+/**
+ * `look`: a saved character's dye for this item. Its numbers replace the
+ * material's same-named ones; `HairDyeColor1` is the dye colour and
+ * `HairDyeColor2` the base tint (inferred: a bleached character's
+ * BaseMelanin 0 leaves white x colour 2, and brows with #110500 there read
+ * dark).
+ */
+async function hair(s: SubMaterialInfo, look?: PartLook): Promise<THREE.Material> {
+	const lookNum = (k: string) => look?.params.find(([key]) => key === k)?.[1];
+	const lookRgb = (k: string) => look?.colors.find(([key]) => key === k)?.[1];
 	const num = (k: string, fallback: number) => {
-		const v = Number(s.params.find(([key]) => key === k)?.[1]);
+		const v = lookNum(k) ?? Number(s.params.find(([key]) => key === k)?.[1]);
 		return Number.isFinite(v) ? v : fallback;
 	};
+	const LOOK_COLORS: Record<string, string> = { DyeColor: 'HairDyeColor1', BaseTintColor: 'HairDyeColor2' };
 	const rgb = (k: string, fallback: [number, number, number]) => {
+		const fromLook = LOOK_COLORS[k] ? lookRgb(LOOK_COLORS[k]) : undefined;
+		if (fromLook) return srgb(fromLook);
 		const v = (s.params.find(([key]) => key === k)?.[1] ?? '').split(',').map(Number);
 		return v.length === 3 && v.every(Number.isFinite) ? color(v as [number, number, number]) : color(fallback);
 	};

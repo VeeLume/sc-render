@@ -12,8 +12,7 @@ import {
 	type SceneItem,
 	type ScenePaletteEntry,
 	type ScenePart,
-	type SubMaterialInfo
-} from '$lib/bindings';
+	type SubMaterialInfo, type PartLook } from '$lib/bindings';
 import { fetchModelBuffer } from './protocol';
 import { buildMaterial, loadMaterial } from './materials';
 /** A tint palette: entries A, B, C. */
@@ -67,6 +66,9 @@ const TONE_MAPS: Record<ToneMap, THREE.ToneMapping> = {
 	aces: THREE.ACESFilmicToneMapping,
 	linear: THREE.LinearToneMapping
 };
+
+/** A saved character's colour overrides by item GUID (see `characterLook`). */
+export type Looks = Map<string, PartLook>;
 
 export class Cell {
 	readonly renderer: THREE.WebGLRenderer;
@@ -125,13 +127,13 @@ export class Cell {
 	 * Draw `fx`. With `keepView`, the previous item's fit and rotation stay
 	 * (the same character with parts hidden or shown does not jump).
 	 */
-	async show(fx: SceneItem, opts: CellOptions, keepView = false): Promise<string[]> {
+	async show(fx: SceneItem, opts: CellOptions, keepView = false, looks: Looks = new Map()): Promise<string[]> {
 		const log: string[] = [];
 		const generation = ++this.generation;
 
 		this.aspect = fx.aspect;
 		for (const n of fx.notes) log.push(`note: ${n}`);
-		const model = await buildItem(fx.root, log, 0, new CharacterBones(fx.root));
+		const model = await buildItem(fx.root, log, 0, new CharacterBones(fx.root), looks);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -423,7 +425,13 @@ class CharacterBones {
  * that, a node of its geometry (a .cga helper); it is drawn with its own
  * palette, not its parent's.
  */
-async function buildItem(item: ScenePart, log: string[], depth: number, character: CharacterBones): Promise<THREE.Group> {
+async function buildItem(
+	item: ScenePart,
+	log: string[],
+	depth: number,
+	character: CharacterBones,
+	looks: Looks
+): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
 	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
@@ -435,7 +443,8 @@ async function buildItem(item: ScenePart, log: string[], depth: number, characte
 		const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
 		log.push(`${pad}  ${piece.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
 		log.push(`${pad}    material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
-		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined));
+		const look = looks.get(item.guid);
+		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look));
 	}
 	if (!item.attachments.length) return group;
 	let bones: BoneInfo[] = [];
@@ -469,7 +478,7 @@ async function buildItem(item: ScenePart, log: string[], depth: number, characte
 		}
 		const on = name ? `${at.bone} (${bone ? 'bone' : 'node'})` : 'its skeleton (skinned)';
 		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
-		const child = await buildItem(at.part, log, depth + 1, character);
+		const child = await buildItem(at.part, log, depth + 1, character, looks);
 		// The port's offset, then the child moved so its own helper (not its
 		// origin) sits on the port.
 		const holder = new THREE.Group();
@@ -513,7 +522,7 @@ async function helperMatrix(part: ScenePart, group: THREE.Object3D, name: string
 	return new THREE.Matrix4().copy(group.matrixWorld).invert().multiply(node.matrixWorld);
 }
 
-async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette) {
+async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette, look?: PartLook) {
 	const buf = await fetchModelBuffer(info.path);
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
@@ -548,7 +557,7 @@ async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[
 	for (const sm of info.submeshes) {
 		const sub = subs[sm.material];
 		if (!materialCache.has(sm.material)) {
-			materialCache.set(sm.material, sub ? buildMaterial(sub, palette) : Promise.resolve(null));
+			materialCache.set(sm.material, sub ? buildMaterial(sub, palette, look) : Promise.resolve(null));
 		}
 		const material = await materialCache.get(sm.material)!;
 		if (!material) {

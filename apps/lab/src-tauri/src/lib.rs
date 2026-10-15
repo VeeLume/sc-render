@@ -40,6 +40,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         catalog::item_scene,
         catalog::load_inventory,
         catalog::load_character,
+        catalog::list_character_files,
+        catalog::character_look,
     ])
 }
 

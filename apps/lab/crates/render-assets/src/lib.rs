@@ -7,6 +7,7 @@
 //! `Data.p4k` at runtime.
 
 mod catalog;
+mod look;
 mod model;
 mod texture;
 
@@ -14,6 +15,7 @@ pub use catalog::{
     Body, Catalog, ChildSpec, FALLBACK_ELEVATION, FALLBACK_OFFSET, InventoryNode, ItemSummary,
     SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
 };
+pub use look::{CharacterFile, CharacterLook, PartLook, character_files, character_look};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
 pub use texture::{Mip, Rgba, TextureKind, Volume};
 

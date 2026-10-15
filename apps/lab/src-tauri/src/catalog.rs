@@ -93,6 +93,20 @@ pub async fn load_inventory(
     .await
 }
 
+/// The install's saved characters (`.chf`), newest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_character_files() -> Result<Vec<render_assets::CharacterFile>, String> {
+    blocking(|| render_assets::character_files().map_err(|e| e.to_string())).await
+}
+
+/// A saved character's colour overrides (hair and brow dye, eye and skin).
+#[tauri::command]
+#[specta::specta]
+pub async fn character_look(path: String) -> Result<render_assets::CharacterLook, String> {
+    blocking(move || render_assets::character_look(path).map_err(|e| e.to_string())).await
+}
+
 /// The player's character (actor, body, everything worn) from the same
 /// dump; `None` when it has no player stash.
 #[tauri::command]
