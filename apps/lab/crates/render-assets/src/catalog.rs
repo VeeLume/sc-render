@@ -24,6 +24,11 @@ use crate::{Assets, Error, Result};
 pub const FALLBACK_OFFSET: [f32; 3] = [0.0, 205.0, 0.0];
 pub const FALLBACK_ELEVATION: f32 = 8.0;
 
+/// Pose for a character (an actor: a bare `.chr` with the body skinned on):
+/// facing the viewer, turned a little, seen at eye level. From above, a
+/// standing figure looks as if it leaned back.
+pub const CHARACTER_OFFSET: [f32; 3] = [0.0, 200.0, 0.0];
+
 /// The character body an item is shown for. Armor and clothing select their
 /// geometry variant by it (`Female` / `Male`), then by
 /// `inventoryStoredEntity`: the item as stored, a static `_prop.cgf` instead
@@ -361,8 +366,14 @@ impl Catalog {
         };
         let mut root = self.part(assets, &guid, children, fit, 0, &mut notes)?;
         share_skeleton(&mut root, None);
+        let actor = root.pieces.is_empty()
+            && root
+                .skeleton
+                .as_deref()
+                .is_some_and(|s| s.to_lowercase().ends_with(".chr"));
         let (offset, elevation) = match self.view.orientation(item, visual) {
             Some(o) => (o, 0.0),
+            None if actor => (CHARACTER_OFFSET, 0.0),
             None => {
                 notes.push("no inventory orientation entry: fallback pose".into());
                 (FALLBACK_OFFSET, FALLBACK_ELEVATION)

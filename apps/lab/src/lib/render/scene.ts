@@ -143,6 +143,7 @@ export class Cell {
 		const rig = new CharacterRig(fx.root);
 		const character = !!fx.root.skeleton?.toLowerCase().endsWith('.chr') && fx.root.pieces.length === 0;
 		await rig.init(pose ?? character);
+		for (const n of rig.notes) log.push(`pose: ${n}`);
 		const model = await buildItem(fx.root, log, 0, rig, looks);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
@@ -421,6 +422,8 @@ class CharacterRig {
 	private readonly posedExtra = new Map<string, Promise<THREE.Matrix4 | null>>();
 	/** Skinned meshes bind to the posed skeleton (character renders only). */
 	posing = false;
+	/** What the pose did, for the render log. */
+	notes: string[] = [];
 
 	constructor(private readonly root: ScenePart) {
 		const walk = (p: ScenePart) => {
@@ -442,7 +445,7 @@ class CharacterRig {
 			this.base.set(b.name.toLowerCase(), { bind: boneMatrix(b), parent });
 			this.posedBase.set(b.name.toLowerCase(), boneMatrix(b));
 		}
-		standingPose(this.base, this.posedBase);
+		this.notes = standingPose(this.base, this.posedBase);
 		this.posing = true;
 	}
 
@@ -500,19 +503,22 @@ class CharacterRig {
 }
 
 /**
- * A relaxed standing pose from the A-pose bind: the upper arms turn to hang
- * down a little away from the body, the elbows bend slightly forward. Rotations
- * are in model space about each joint and carry the bone's whole subtree.
+ * A relaxed standing pose from the A-pose bind: the upper arms hang a little
+ * away from the body, rolled so the elbows bend forward, and the elbows open
+ * to a slight bend (the bind already bends them by about 40 degrees).
+ * Rotations are in model space about each joint and carry the bone's whole
+ * subtree. Returns what it did, for the log.
  */
 function standingPose(
 	base: Map<string, { bind: THREE.Matrix4; parent: string | null }>,
 	posed: Map<string, THREE.Matrix4>
-) {
+): string[] {
+	const notes: string[] = [];
 	const children = new Map<string, string[]>();
 	for (const [name, b] of base) if (b.parent) children.set(b.parent, [...(children.get(b.parent) ?? []), name]);
 	const position = (name: string) => new THREE.Vector3().setFromMatrixPosition(posed.get(name)!);
+	const dir = (from: string, to: string) => position(to).sub(position(from)).normalize();
 	const rotateSubtree = (name: string, q: THREE.Quaternion) => {
-		if (!posed.has(name)) return;
 		const pivot = position(name);
 		const m = new THREE.Matrix4()
 			.makeTranslation(pivot.x, pivot.y, pivot.z)
@@ -525,26 +531,35 @@ function standingPose(
 			stack.push(...(children.get(n) ?? []));
 		}
 	};
-	// Front is where the face is: +Y in the SC skeletons, checked by the head.
-	const head = posed.get('head');
-	const nose = [...posed.keys()].find((k) => k.includes('nose'));
+	/** The signed angle from `a` to `b` about `axis` (all unit, a and b normal to it). */
+	const angleAbout = (a: THREE.Vector3, b: THREE.Vector3, axis: THREE.Vector3) =>
+		Math.atan2(axis.dot(a.clone().cross(b)), a.dot(b));
+	const deg = (r: number) => `${Math.round(r / DEG)}°`;
+	// Front is where the toes point: +Y in the SC skeletons.
 	const front =
-		head && nose ? Math.sign(new THREE.Vector3().setFromMatrixPosition(posed.get(nose)!).y - position('head').y) || 1 : 1;
+		posed.has('lefttoe') && posed.has('leftfoot') ? Math.sign(dir('leftfoot', 'lefttoe').y) || 1 : 1;
 	for (const side of ['left', 'right'] as const) {
-		const arm = `${side}arm`;
-		const fore = `${side}forearm`;
-		const hand = `${side}hand`;
-		if (!posed.has(arm) || !posed.has(fore)) continue;
+		const shoulder = `${side}arm`;
+		const elbow = `${side}forearm`;
+		const wrist = `${side}hand`;
+		if (!posed.has(shoulder) || !posed.has(elbow) || !posed.has(wrist)) continue;
 		const out = side === 'left' ? -1 : 1;
-		const along = position(fore).sub(position(arm)).normalize();
-		const hang = new THREE.Vector3(out * 0.2, front * 0.06, -1).normalize();
-		rotateSubtree(arm, new THREE.Quaternion().setFromUnitVectors(along, hang));
-		if (posed.has(hand)) {
-			// Bend the elbow forward about the shoulder-to-shoulder axis.
-			const bend = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), front * 0.26);
-			rotateSubtree(fore, bend);
-		}
+		const hang = new THREE.Vector3(out * 0.2, front * 0.03, -1).normalize();
+		rotateSubtree(shoulder, new THREE.Quaternion().setFromUnitVectors(dir(shoulder, elbow), hang));
+		// Roll the upper arm about itself until the elbow hinge lies across
+		// the body, so the forearm bends towards the front.
+		const upper = dir(shoulder, elbow);
+		const hinge = upper.clone().cross(dir(elbow, wrist)).normalize();
+		const across = new THREE.Vector3(front, 0, 0).projectOnPlane(upper).normalize();
+		const roll = angleAbout(hinge, across, upper);
+		rotateSubtree(shoulder, new THREE.Quaternion().setFromAxisAngle(upper, roll));
+		// Open (or close) the elbow to a slight bend.
+		const bend = upper.angleTo(dir(elbow, wrist));
+		const target = 14 * DEG;
+		rotateSubtree(elbow, new THREE.Quaternion().setFromAxisAngle(across, target - bend));
+		notes.push(`${side} arm: roll ${deg(roll)}, elbow ${deg(bend)} -> ${deg(target)}`);
 	}
+	return notes;
 }
 
 /**
