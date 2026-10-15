@@ -107,11 +107,23 @@ function withF0(fragmentShader: string, f0: string, after = ''): string {
 const MAP_N_LINE = 'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;';
 
 /**
- * The environment only reflects: keep its specular, drop its diffuse
- * irradiance (matte items stay as calibrated; see CellOptions.env).
+ * The environment only reflects, and only on metals. The game's inventory
+ * has no reflection source of its own (its light group's environment probe
+ * is off), so paint, leather and fabric get the rig lights' highlights
+ * alone; the studio stands in for whatever lets the game's metals read as
+ * metal. Metalness by F0: none below 0.08 (dielectrics are 0.02-0.06), full
+ * from 0.25 (the game's layer packer treats specular above 0.25 as metal).
  */
 const IBL_LINE = '#include <lights_fragment_maps>';
 const SPECULAR_ONLY_IBL = `${IBL_LINE}
+iblIrradiance = vec3( 0.0 );
+float scMetal = smoothstep( 0.08, 0.25, max( max( material.specularColor.r, material.specularColor.g ), material.specularColor.b ) );
+radiance *= scMetal;
+#ifdef USE_CLEARCOAT
+clearcoatRadiance *= scMetal;
+#endif`;
+/** Glass keeps its reflections: they are what makes a visor read as glass. */
+const GLASS_IBL = `${IBL_LINE}
 iblIrradiance = vec3( 0.0 );`;
 
 function color(c: [number, number, number]): THREE.Color {
@@ -205,7 +217,7 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
 		shader.fragmentShader = withF0(
 			shader.fragmentShader
 				.replace('#include <common>', '#include <common>\nuniform vec3 uF0;')
-				.replace(IBL_LINE, SPECULAR_ONLY_IBL),
+				.replace(IBL_LINE, GLASS_IBL),
 			'uF0'
 		);
 	};

@@ -47,7 +47,7 @@
 	let log = $state<string[]>([]);
 	let busy = $state(false);
 	let error = $state<string | null>(null);
-	let lightScale = $state(2.5);
+	let lightScale = $state(2);
 	let ambient = $state(0.15);
 	let toneMap = $state<ToneMap>('linear');
 	let rimScale = $state(1);

@@ -36,7 +36,8 @@ export type ToneMap = 'agx' | 'neutral' | 'aces' | 'linear';
 
 /**
  * Calibrated against in-game cells (JS-400, PIPS can): linear tone mapping
- * (the game does not compress highlights like AgX), rig intensity x 2.5,
+ * (the game does not compress highlights like AgX), rig intensity x 2 (2.5
+ * while metals were mis-shaded; the Invictus jacket's colour matches at 2),
  * ambient 0.15 (the shadow sides stay dark in game; brightness comes from the
  * key light, not ambient).
  */
