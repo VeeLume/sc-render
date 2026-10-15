@@ -1,7 +1,0 @@
-# Managed by Copier — do not edit by hand. Run `copier update` to sync with the template.
-_commit: v1.7.0
-_src_path: E:/vscode/veelume-template-rust
-app_dir: .
-frontend: true
-sqlx: false
-
