@@ -146,6 +146,8 @@ pub struct SceneItem {
     pub rig: Vec<SceneLight>,
     /// Cell width / height.
     pub aspect: f32,
+    /// The inventory cell in grid units (width, height), when the item has one.
+    pub grid: Option<[u32; 2]>,
     /// What could not be resolved (shown in the log).
     pub notes: Vec<String>,
 }
@@ -282,12 +284,15 @@ impl Catalog {
         })
     }
 
-    /// Every item with a recipe.
+    /// Every item with a recipe, by label then record name.
     pub fn all(&self) -> Vec<ItemSummary> {
-        self.labels
+        let mut all: Vec<ItemSummary> = self
+            .labels
             .iter()
             .map(|(g, l)| self.summary(g, l))
-            .collect()
+            .collect();
+        all.sort_by(|a, b| a.label.cmp(&b.label).then(a.record.cmp(&b.record)));
+        all
     }
 
     /// Items whose display or record name contains every word of `query`.
@@ -402,6 +407,7 @@ impl Catalog {
             .unwrap_or_default();
         let aspect = visual.grid.map_or(1.0, |[w, h]| w as f32 / h as f32);
         Ok(SceneItem {
+            grid: visual.grid,
             id: guid.to_string(),
             label: self.label(&guid),
             root,

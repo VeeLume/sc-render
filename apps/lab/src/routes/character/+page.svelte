@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { Cell } from '$lib/render/scene';
-	import { AXIS_LOCKS, VIEW_HINT, bindWheelZoom, viewControls, type AxisLock } from '$lib/render/viewControls';
+	import { Button, Segmented, Surface, storedValue } from '@veelume/ui';
+	import type { Cell } from '$lib/render/scene';
+	import Viewport from '$lib/render/Viewport.svelte';
+	import RenderLog from '$lib/components/RenderLog.svelte';
+	import { AXIS_LOCKS, VIEW_HINT, type AxisLock } from '$lib/render/viewControls';
 	import {
 		commands,
 		type Body,
@@ -17,8 +20,7 @@
 	 * everything worn) as a tree; unticking a node hides it and everything
 	 * attached to it from the render.
 	 */
-	let canvas: HTMLCanvasElement;
-	let cell: Cell | null = null;
+	let cell = $state<Cell | null>(null);
 	let character = $state<InventoryNode | null>(null);
 	let body = $state<Body>('Female');
 	/** Natural standing pose, or the skeleton's bind (A-) pose. */
@@ -26,7 +28,6 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 	let log = $state<string[]>([]);
-	let showLog = $state(false);
 	/** Saved characters (`.chf`) to take hair, brow, eye and skin colours from. */
 	let characterFiles = $state<CharacterFile[]>([]);
 	/** The chosen file's path; empty for the materials' own colours. */
@@ -104,27 +105,17 @@
 		scheduleRender();
 	}
 
-	function fit() {
-		if (!cell) return;
-		const box = canvas.parentElement!;
-		const width = Math.min(box.clientWidth, (window.innerHeight - 120) * VIEW_ASPECT);
-		cell.resize(width, width / VIEW_ASPECT);
-		cell.render();
-	}
-
-	/** Turn, pan and zoom the render (see viewControls); a figure mostly turns. */
+	/** A figure mostly turns. */
 	let axisLock = $state<AxisLock>('turn');
-	const controls = viewControls(
-		() => canvas,
-		() => cell,
-		() => axisLock
+
+	const paneOpen = storedValue('character.pane.open', true, (v): v is boolean => typeof v === 'boolean');
+	const paneWidth = storedValue<number | null>(
+		'character.pane.width',
+		null,
+		(v): v is number | null => v === null || typeof v === 'number'
 	);
 
 	onMount(() => {
-		cell = new Cell(canvas);
-		fit();
-		window.addEventListener('resize', fit);
-		const unbindWheel = bindWheelZoom(canvas, () => cell);
 		(async () => {
 			busy = true;
 			const res = await commands.loadCharacter(null);
@@ -145,13 +136,7 @@
 			}
 			await loadLook();
 		})();
-		return () => {
-			window.removeEventListener('resize', fit);
-			unbindWheel();
-			clearTimeout(renderTimer);
-			cell?.dispose();
-			cell = null;
-		};
+		return () => clearTimeout(renderTimer);
 	});
 </script>
 
@@ -193,82 +178,78 @@
 	</li>
 {/snippet}
 
-<div class="flex h-full gap-4 p-[var(--density-padding)]">
-	<aside class="w-96 shrink-0 overflow-y-auto rounded-xl border p-3 text-sm">
-		<div class="mb-2 flex items-center justify-between">
-			<h1 class="font-medium">Character</h1>
-			<button class="rounded border px-2 py-0.5 text-xs hover:bg-muted" onclick={showAll} disabled={!hidden.size}
-				>Show all</button
-			>
-		</div>
-		{#if character}
-			<ul>{@render node(character, 0, false)}</ul>
-		{:else if !error}
-			<p class="text-muted-foreground">Loading the inventory…</p>
-		{/if}
-	</aside>
-	<main class="min-w-0 flex-1 overflow-y-auto">
-		<div class="relative w-fit rounded-xl border bg-[#1c2632]">
-			<canvas
-				bind:this={canvas}
-				class="block cursor-grab touch-none active:cursor-grabbing"
-				title={VIEW_HINT}
-				{...controls}
-			></canvas>
-			{#if busy}<div class="absolute top-2 right-3 text-xs text-muted-foreground">rendering…</div>{/if}
-		</div>
-		<div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-			<span>{VIEW_HINT}.</span>
-			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Rotation axis">
-				{#each AXIS_LOCKS as lock (lock.value)}
-					<button
-						role="radio"
-						aria-checked={axisLock === lock.value}
-						title={lock.hint}
-						class="px-2 py-0.5 {axisLock === lock.value ? 'bg-muted text-foreground' : 'hover:bg-muted/50'}"
-						onclick={() => (axisLock = lock.value)}>{lock.label}</button
-					>
-				{/each}
+<Surface.Supporting
+	title="Character"
+	open={paneOpen.value}
+	onopen={(next) => (paneOpen.value = next)}
+	width={paneWidth.value}
+	onresize={(next) => (paneWidth.value = next)}
+>
+	{#snippet main()}
+		<div class="flex h-full min-h-0 gap-3 p-3">
+			<aside class="flex w-96 shrink-0 flex-col overflow-hidden rounded-lg border bg-card text-sm">
+				<div class="flex h-14 shrink-0 items-center justify-between border-b px-3">
+					<h2 class="font-semibold">Parts</h2>
+					<Button variant="outline" size="chrome" onclick={showAll} disabled={!hidden.size}>Show all</Button>
+				</div>
+				<div class="min-h-0 flex-1 overflow-y-auto p-3">
+					{#if character}
+						<ul>{@render node(character, 0, false)}</ul>
+					{:else if !error}
+						<p class="text-muted-foreground">Loading the inventory…</p>
+					{/if}
+				</div>
+			</aside>
+			<div class="min-w-0 flex-1">
+				<Viewport bind:cell {axisLock} {busy} />
 			</div>
-			<label class="flex items-center gap-1.5">
-				Colours
-				<select class="rounded border bg-transparent px-1.5 py-0.5" bind:value={lookPath} onchange={loadLook}>
-					<option value="">Material defaults</option>
-					{#each characterFiles as f (f.path)}
-						<option value={f.path}>{f.name} ({new Date(f.modified * 1000).toLocaleDateString()})</option>
-					{/each}
-				</select>
-			</label>
-			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Pose">
-				{#each [{ v: true, l: 'Natural' }, { v: false, l: 'Bind' }] as p (p.l)}
-					<button
-						role="radio"
-						aria-checked={natural === p.v}
-						title={p.v ? 'Standing, arms down' : 'The skeleton bind (A-) pose'}
-						class="px-2 py-0.5 {natural === p.v ? 'bg-muted text-foreground' : 'hover:bg-muted/50'}"
-						onclick={() => {
-							natural = p.v;
-							rendered = false;
-							scheduleRender();
-						}}>{p.l}</button
-					>
-				{/each}
-			</div>
-			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Body">
-				{#each ['Female', 'Male'] as const as b (b)}
-					<button
-						role="radio"
-						aria-checked={body === b}
-						class="px-2 py-0.5 {body === b ? 'bg-muted text-foreground' : 'hover:bg-muted/50'}"
-						onclick={() => setBody(b)}>{b}</button
-					>
-				{/each}
-			</div>
-			<button class="underline-offset-2 hover:underline" onclick={() => (showLog = !showLog)}
-				>{showLog ? 'Hide' : 'Show'} render log</button
-			>
 		</div>
-		{#if error}<pre class="mt-3 text-xs whitespace-pre-wrap text-red-400">{error}</pre>{/if}
-		{#if showLog}<pre class="mt-3 text-xs whitespace-pre-wrap text-muted-foreground">{log.join('\n')}</pre>{/if}
-	</main>
-</div>
+	{/snippet}
+	{#snippet pane()}
+		<!-- A fixed column: nothing here scrolls but the log. -->
+		<div class="flex h-full min-w-0 flex-col gap-5 overflow-hidden text-sm">
+			<section class="grid gap-3">
+				<h3 class="font-medium">View</h3>
+				<p class="text-xs text-muted-foreground">{VIEW_HINT}.</p>
+				<Segmented
+					options={AXIS_LOCKS.map((l) => ({ value: l.value, label: l.label }))}
+					value={axisLock}
+					onchange={(v) => (axisLock = v as AxisLock)}
+				/>
+			</section>
+			<section class="grid gap-3">
+				<h3 class="font-medium">Figure</h3>
+				<Segmented
+					options={[
+						{ value: 'natural', label: 'Natural' },
+						{ value: 'bind', label: 'Bind pose' }
+					]}
+					value={natural ? 'natural' : 'bind'}
+					onchange={(v) => {
+						natural = v === 'natural';
+						rendered = false;
+						scheduleRender();
+					}}
+				/>
+				<Segmented
+					options={[
+						{ value: 'Female', label: 'Female' },
+						{ value: 'Male', label: 'Male' }
+					]}
+					value={body}
+					onchange={(v) => setBody(v as Body)}
+				/>
+				<label class="grid gap-1">
+					<span>Colours</span>
+					<select class="h-9 rounded-md border bg-background px-2" bind:value={lookPath} onchange={loadLook}>
+						<option value="">Material defaults</option>
+						{#each characterFiles as f (f.path)}
+							<option value={f.path}>{f.name} ({new Date(f.modified * 1000).toLocaleDateString()})</option>
+						{/each}
+					</select>
+				</label>
+			</section>
+			<RenderLog lines={log} {error} />
+		</div>
+	{/snippet}
+</Surface.Supporting>

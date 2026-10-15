@@ -11,6 +11,19 @@ export default defineConfig({
 		tailwindcss(),
 		sveltekit()
 	],
+	// @veelume/ui ships source (.svelte.ts rune modules) the dependency
+	// pre-bundler cannot parse, so it reaches the Svelte plugin uncompiled.
+	// Excluding it also un-bundles its dependencies: list the kit's own.
+	optimizeDeps: {
+		exclude: ['@veelume/ui'],
+		include: [
+			'@veelume/ui > bits-ui',
+			'@veelume/ui > @floating-ui/dom',
+			'@veelume/ui > @internationalized/date',
+			'@veelume/ui > clsx',
+			'@veelume/ui > tailwind-merge'
+		]
+	},
 	// Don't let Vite wipe the terminal — it hides Rust compile errors.
 	clearScreen: false,
 	server: {

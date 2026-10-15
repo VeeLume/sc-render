@@ -46,6 +46,13 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
+/// Every item with a recipe, by label.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_items(app: AppHandle) -> Result<Vec<ItemSummary>, String> {
+    blocking(move || Ok(wait(&app)?.all())).await
+}
+
 /// Items whose display or record name contains every word of `query`.
 #[tauri::command]
 #[specta::specta]

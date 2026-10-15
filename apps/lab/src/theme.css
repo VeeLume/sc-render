@@ -3,10 +3,18 @@
  * touched again — copier will not overwrite this file. Edit freely, or paste a
  * whole theme from https://tweakcn.com over the two blocks below.
  *
- * The token *names* are the contract (app.css maps them into Tailwind via
- * `@theme inline`, shadcn-svelte components expect exactly this set). Values
- * are yours.
+ * The token *names* are the contract — app.css maps them into Tailwind via
+ * `@theme inline`, and @veelume/ui styles against exactly this set. Values are
+ * yours.
  */
+
+/*
+ * The kit's stylesheet: it carries its own `@source` (so Tailwind scans the
+ * kit's classes) and maps the tokens the shadcn convention lacks. Imported
+ * here rather than from app.css because app.css is template-managed.
+ */
+@import '@veelume/ui/styles.css';
+
 /* warm — warm charcoal + amber accent (starlume / Hearth). */
 :root {
 	--background: oklch(0.985 0.004 85);

@@ -2,9 +2,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 
-	// `/` exists only to land somewhere. Point it at whatever the app's real
-	// entry destination is.
+	// `/` exists only to land somewhere: the item browser.
 	onMount(() => {
-		goto('/home', { replaceState: true });
+		goto('/items', { replaceState: true });
 	});
 </script>

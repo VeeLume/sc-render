@@ -75,6 +75,17 @@ async saveLog(name: string, text: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Every item with a recipe, by label.
+ */
+async listItems() : Promise<Result<ItemSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_items") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Items whose display or record name contains every word of `query`.
  */
 async searchItems(query: string) : Promise<Result<ItemSummary[], string>> {
@@ -299,6 +310,10 @@ elevation: number; rig: SceneLight[];
  * Cell width / height.
  */
 aspect: number; 
+/**
+ * The inventory cell in grid units (width, height), when the item has one.
+ */
+grid: [number, number] | null; 
 /**
  * What could not be resolved (shown in the log).
  */

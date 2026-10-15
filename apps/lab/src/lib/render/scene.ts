@@ -116,11 +116,49 @@ export class Cell {
 		pmrem.dispose();
 	}
 
+	/**
+	 * Size the drawing buffer to the canvas's `width` x `height` CSS pixels.
+	 * The canvas may have any shape: the cell stays whole in it (see `fit`).
+	 */
 	resize(width: number, height: number) {
+		if (width < 1 || height < 1) return;
 		this.renderer.setPixelRatio(window.devicePixelRatio);
 		this.renderer.setSize(width, height, false);
 		this.camera.aspect = width / height;
-		this.camera.updateProjectionMatrix();
+		this.applyView();
+	}
+
+	/**
+	 * The cell as its inventory slot shows it: the game's pose and fit, no
+	 * turn, zoom or pan, `height` pixels high and as wide as the cell's aspect.
+	 * Drawn into a copy, so the view on the canvas is untouched.
+	 */
+	capture(height: number): HTMLCanvasElement {
+		const width = Math.max(1, Math.round(height * this.aspect));
+		height = Math.max(1, Math.round(height));
+		const size = this.renderer.getSize(new THREE.Vector2());
+		const ratio = this.renderer.getPixelRatio();
+		const turn = this.turn?.quaternion.clone();
+		const view = { zoom: this.zoom, pan: this.pan.clone() };
+		this.renderer.setPixelRatio(1);
+		this.renderer.setSize(width, height, false);
+		this.camera.aspect = width / height;
+		this.turn?.quaternion.identity();
+		this.zoom = 1;
+		this.pan.set(0, 0);
+		this.applyView();
+		const out = document.createElement('canvas');
+		out.width = width;
+		out.height = height;
+		out.getContext('2d')!.drawImage(this.canvas, 0, 0);
+		this.renderer.setPixelRatio(ratio);
+		this.renderer.setSize(size.x, size.y, false);
+		this.camera.aspect = size.x / size.y;
+		if (turn) this.turn!.quaternion.copy(turn);
+		this.zoom = view.zoom;
+		this.pan.copy(view.pan);
+		this.applyView();
+		return out;
 	}
 
 	/**
@@ -193,20 +231,18 @@ export class Cell {
 		// turns the item in place.
 		const turn = new THREE.Group();
 		if (keepView && this.turn) turn.quaternion.copy(this.turn.quaternion);
-		if (!keepView) {
-			this.zoom = 1;
-			this.pan.set(0, 0);
-			this.camera.zoom = 1;
-			this.camera.updateProjectionMatrix();
-			this.camera.position.set(0, 0, -0.5 / Math.tan((FOV / 2) * DEG));
-		}
 		turn.add(pivot);
 		this.turn = turn;
 		this.item = turn;
 		this.scene.add(turn);
+		if (!keepView) {
+			this.zoom = 1;
+			this.pan.set(0, 0);
+		}
 
 		this.setLights(fx, opts);
-		this.render();
+		// The cell's aspect may have changed the fit.
+		this.applyView();
 		log.push(...this.shaderErrors.splice(0));
 		return log;
 	}
@@ -281,6 +317,15 @@ export class Cell {
 	private pan = new THREE.Vector2();
 
 	/**
+	 * The camera zoom that keeps the whole cell in view: the cell is 1 high
+	 * and fills the canvas height unless the canvas is narrower than the cell,
+	 * then its width fills the canvas width.
+	 */
+	private get fit(): number {
+		return Math.min(1, this.camera.aspect / this.aspect);
+	}
+
+	/**
 	 * Zoom by `factor` keeping the point under the canvas pixel (`x`, `y`)
 	 * where it is, so the wheel zooms towards the cursor.
 	 */
@@ -296,7 +341,7 @@ export class Cell {
 
 	/** Move the view by a pointer drag of `dx`, `dy` pixels (the item follows). */
 	panBy(dx: number, dy: number) {
-		const perPixel = 1 / (this.canvas.clientHeight * this.zoom);
+		const perPixel = 1 / (this.canvas.clientHeight * this.zoom * this.fit);
 		this.pan.x -= dx * perPixel;
 		this.pan.y += dy * perPixel;
 		this.applyView();
@@ -312,12 +357,12 @@ export class Cell {
 
 	/** A canvas pixel's offset from the centre, in cell units at zoom 1. */
 	private planeOffset(x: number, y: number): THREE.Vector2 {
-		const h = this.canvas.clientHeight;
-		return new THREE.Vector2((x - this.canvas.clientWidth / 2) / h, -(y - h / 2) / h);
+		const h = this.canvas.clientHeight * this.fit;
+		return new THREE.Vector2((x - this.canvas.clientWidth / 2) / h, -(y - this.canvas.clientHeight / 2) / h);
 	}
 
 	private applyView() {
-		this.camera.zoom = this.zoom;
+		this.camera.zoom = this.zoom * this.fit;
 		this.camera.updateProjectionMatrix();
 		const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
 		const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
