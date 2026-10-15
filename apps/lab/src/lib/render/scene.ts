@@ -125,7 +125,7 @@ export class Cell {
 
 		this.aspect = fx.aspect;
 		for (const n of fx.notes) log.push(`note: ${n}`);
-		const model = await buildItem(fx.root, log);
+		const model = await buildItem(fx.root, log, 0, new CharacterBones(fx.root));
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -305,11 +305,45 @@ function visibleBounds(root: THREE.Object3D): THREE.Box3 {
 }
 
 /**
- * An item and, recursively, what is attached to it. Each attachment hangs on
- * a bone of the item's skeleton or, failing that, a node of its geometry
- * (a .cga helper); it is drawn with its own palette, not its parent's.
+ * Bones that worn skins add to a character's skeleton. A skin may carry
+ * joints the base `.chr` lacks, which the engine merges in: the Novikov
+ * undersuit's skin brings `magazine_attach_1_override` and friends that its
+ * armor core's ports name. Searched only when a part's own skeleton lacks a
+ * bone; skins load on first need.
  */
-async function buildItem(item: ScenePart, log: string[], depth = 0): Promise<THREE.Group> {
+class CharacterBones {
+	private readonly skins: string[] = [];
+	private readonly loaded = new Map<string, Promise<BoneInfo[]>>();
+
+	constructor(root: ScenePart) {
+		const walk = (p: ScenePart) => {
+			for (const piece of p.pieces) if (piece.geometry.toLowerCase().endsWith('.skin')) this.skins.push(piece.geometry);
+			for (const a of p.attachments) walk(a.part);
+		};
+		walk(root);
+	}
+
+	async find(name: string): Promise<BoneInfo | undefined> {
+		for (const skin of this.skins) {
+			let bones = this.loaded.get(skin);
+			if (!bones) {
+				bones = commands.loadSkeleton(skin).then((r) => (r.status === 'ok' ? r.data : []));
+				this.loaded.set(skin, bones);
+			}
+			const hit = (await bones).find((b) => b.name.toLowerCase() === name);
+			if (hit) return hit;
+		}
+		return undefined;
+	}
+}
+
+/**
+ * An item and, recursively, what is attached to it. Each attachment hangs on
+ * a bone of the item's skeleton (or one a worn skin adds to it) or, failing
+ * that, a node of its geometry (a .cga helper); it is drawn with its own
+ * palette, not its parent's.
+ */
+async function buildItem(item: ScenePart, log: string[], depth: number, character: CharacterBones): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
 	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
@@ -332,9 +366,14 @@ async function buildItem(item: ScenePart, log: string[], depth = 0): Promise<THR
 	}
 	for (const at of item.attachments) {
 		const name = at.bone.toLowerCase();
-		const bone = bones.find((b) => b.name.toLowerCase() === name);
+		let bone = name ? bones.find((b) => b.name.toLowerCase() === name) : undefined;
+		// Only a part on a character skeleton can use a worn skin's bones.
+		if (name && !bone && item.skeleton) bone = await character.find(name);
 		let anchor: THREE.Object3D | undefined;
-		if (bone) {
+		if (!name) {
+			// Skinned to this part's skeleton: bind pose, at its origin.
+			anchor = group;
+		} else if (bone) {
 			anchor = new THREE.Object3D();
 			anchor.position.set(...bone.position);
 			anchor.quaternion.set(...bone.rotation);
@@ -348,8 +387,9 @@ async function buildItem(item: ScenePart, log: string[], depth = 0): Promise<THR
 			log.push(`${pad}  ${at.part.record}: no bone or node ${at.bone}`);
 			continue;
 		}
-		log.push(`${pad}  on ${at.bone} (${bone ? 'bone' : 'node'})${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
-		const child = await buildItem(at.part, log, depth + 1);
+		const on = name ? `${at.bone} (${bone ? 'bone' : 'node'})` : 'its skeleton (skinned)';
+		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
+		const child = await buildItem(at.part, log, depth + 1, character);
 		// The port's offset, then the child moved so its own helper (not its
 		// origin) sits on the port.
 		const holder = new THREE.Group();

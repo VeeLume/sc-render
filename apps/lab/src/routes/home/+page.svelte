@@ -35,6 +35,9 @@
 		'none_pistol_ballistic_01',
 		'vgl_flightsuit_helmet_01_03_01',
 		'crlf_consumable_healing_01',
+		// The player's own character: the actor's skeleton, body, head, hair
+		// and everything worn.
+		'inventory:Player',
 		// Both records are named "Invictus Flight Jacket"; the dark brown
 		// leather one seen in game is _04.
 		'dmc_jacket_13_01_01',
@@ -91,6 +94,8 @@
 			await commands.saveLog(name, log.join('\n'));
 		} catch (e) {
 			error = String(e);
+			// Dev runs read the logs, not the window.
+			if (snapshotName) await commands.saveLog(snapshotName, [...log, `ERROR ${error}`].join('\n'));
 		} finally {
 			busy = false;
 		}
@@ -174,7 +179,8 @@
 	function matching(nodes: InventoryNode[], filter: string, out: InventoryNode[] = []): InventoryNode[] {
 		for (const n of nodes) {
 			if (out.length >= 150) break;
-			if (n.guid && (!filter || n.label.toLowerCase().includes(filter))) out.push(n);
+			const hit = !filter || n.label.toLowerCase().includes(filter) || n.record.toLowerCase().includes(filter);
+			if (n.guid && hit) out.push(n);
 			// Hangar decorations hang on the hangar's ports, so search both.
 			matching(n.attached, filter, out);
 			matching(n.contents, filter, out);

@@ -46,10 +46,58 @@ impl Body {
             Body::Male => &["Male", "inventoryStoredEntity"],
         }
     }
+
+    /// The tags of an item worn on a body: the body-fitted variant, not the
+    /// stored prop.
+    pub fn worn_tags(self) -> &'static [&'static str] {
+        match self {
+            Body::Female => &["Female"],
+            Body::Male => &["Male"],
+        }
+    }
 }
 
-/// Nesting limit for attached items (rack → rifle → scope is three).
-const MAX_DEPTH: usize = 6;
+/// How a part is shown: for which body, and whether it is worn (skinned
+/// onto a body, directly or through a parent) and so needs the body-fitted
+/// geometry rather than the stored prop.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    body: Body,
+    worn: bool,
+}
+
+impl Fit {
+    fn tags(self) -> &'static [&'static str] {
+        if self.worn {
+            self.body.worn_tags()
+        } else {
+            self.body.tags()
+        }
+    }
+}
+
+/// Give every skinned part its parent's skeleton when it has none of its
+/// own: a worn armor core's ports name the body's bones
+/// (`magazine_attach_1_override`), and the body takes the player actor's.
+fn share_skeleton(part: &mut ScenePart, inherited: Option<&str>) {
+    if part.skeleton.is_none() {
+        part.skeleton = inherited.map(str::to_string);
+    }
+    let skeleton = part.skeleton.clone();
+    for a in &mut part.attachments {
+        // Only skinned children (empty bone) share the skeleton.
+        let pass = if a.bone.is_empty() {
+            skeleton.as_deref()
+        } else {
+            None
+        };
+        share_skeleton(&mut a.part, pass);
+    }
+}
+
+/// Nesting limit for attached items (player → body → armor core → backpack
+/// → rifle → scope is five).
+const MAX_DEPTH: usize = 10;
 
 /// Everything the scenes are built from.
 pub struct Catalog {
@@ -118,7 +166,8 @@ pub struct ScenePiece {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SceneAttachment {
-    /// Bone or geometry node.
+    /// Bone or geometry node; empty for a part skinned to this one's
+    /// skeleton, which sits at its origin (a body's head, a head's hair).
     pub bone: String,
     /// Offset from the bone: position, then rotation as a quaternion
     /// `(x, y, z, w)` (a port helper's `Offset`, a `.cdf` part's
@@ -171,6 +220,9 @@ pub struct InventoryNode {
     pub geid: String,
     pub guid: Option<String>,
     pub label: String,
+    /// Record name (`Player`, `body_01_noMagicPocket`); empty when the
+    /// class is unknown.
+    pub record: String,
     /// The port on the parent, by name.
     pub port: Option<String>,
     pub attached: Vec<InventoryNode>,
@@ -296,7 +348,9 @@ impl Catalog {
             .get(&guid)
             .ok_or_else(|| Error::Catalog(format!("{guid} has no geometry")))?;
         let mut notes = Vec::new();
-        let root = self.part(assets, &guid, children, body, 0, &mut notes)?;
+        let fit = Fit { body, worn: false };
+        let mut root = self.part(assets, &guid, children, fit, 0, &mut notes)?;
+        share_skeleton(&mut root, None);
         let (offset, elevation) = match self.view.orientation(item, visual) {
             Some(o) => (o, 0.0),
             None => {
@@ -343,7 +397,7 @@ impl Catalog {
         assets: &Assets,
         guid: &Guid,
         children: Option<&[ChildSpec]>,
-        body: Body,
+        fit: Fit,
         depth: usize,
         notes: &mut Vec<String>,
     ) -> Result<ScenePart> {
@@ -353,7 +407,7 @@ impl Catalog {
             .get(guid)
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry")))?;
         let look = visual
-            .look(body.tags())
+            .look(fit.tags())
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry path")))?;
         let palette = look
             .palette
@@ -420,6 +474,10 @@ impl Catalog {
                     )),
                 }
             }
+        } else if look.geometry.to_ascii_lowercase().ends_with(".chr") {
+            // A bare skeleton (the player actor): nothing to draw itself;
+            // its skinned children (the body) take its bones.
+            part.skeleton = Some(look.geometry.clone());
         } else {
             part.pieces.push(ScenePiece {
                 geometry: look.geometry.clone(),
@@ -446,10 +504,16 @@ impl Catalog {
                 Ok(g) if self.visuals.get(&g).is_some() => g,
                 _ => continue, // not drawn (sensors, controllers)
             };
-            let Some((port, helper)) = visual
-                .port(&c.port)
-                .and_then(|p| Some((p, p.helper.clone()?)))
-            else {
+            // A skinned child shares this item's skeleton: in bind pose it
+            // sits at this item's origin (empty bone).
+            let Some((port, helper)) = visual.port(&c.port).and_then(|p| {
+                let helper = if p.skinned {
+                    String::new()
+                } else {
+                    p.helper.clone()?
+                };
+                Some((p, helper))
+            }) else {
                 notes.push(format!("{record}: no port {} with a helper", c.port));
                 continue;
             };
@@ -457,7 +521,10 @@ impl Catalog {
                 assets,
                 &child,
                 c.children.as_deref(),
-                body,
+                Fit {
+                    worn: fit.worn || port.skinned,
+                    ..fit
+                },
                 depth + 1,
                 notes,
             ) {
@@ -515,6 +582,9 @@ impl Catalog {
         InventoryNode {
             geid: v["geid"].to_string(),
             guid: guid.map(|g| g.to_string()),
+            record: guid
+                .and_then(|g| self.records.get(&g).cloned())
+                .unwrap_or_default(),
             label: guid.map_or_else(
                 || format!("unknown class {}", v["class_crc"]),
                 |g| {

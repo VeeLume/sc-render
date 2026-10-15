@@ -156,6 +156,11 @@ children: ChildSpec[] | null }
  */
 export type InventoryNode = { geid: string; guid: string | null; label: string; 
 /**
+ * Record name (`Player`, `body_01_noMagicPocket`); empty when the
+ * class is unknown.
+ */
+record: string; 
+/**
  * The port on the parent, by name.
  */
 port: string | null; attached: InventoryNode[]; contents: InventoryNode[] }
@@ -184,7 +189,8 @@ export type NodeInfo = { name: string; parent: number | null;
 transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
 export type SceneAttachment = { 
 /**
- * Bone or geometry node.
+ * Bone or geometry node; empty for a part skinned to this one's
+ * skeleton, which sits at its origin (a body's head, a head's hair).
  */
 bone: string; 
 /**
