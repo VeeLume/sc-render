@@ -3,15 +3,16 @@
 //! real attachments).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example scene_probe -- <record name>...
-//! cargo run -p render-assets --release --example scene_probe -- --inventory <inventory.json> <filter>
-//! cargo run -p render-assets --release --example scene_probe -- --coverage
-//! cargo run -p render-assets --release --example scene_probe -- --search <words>...
+//! cargo run -p lab-catalog --release --example scene_probe -- <record name>...
+//! cargo run -p lab-catalog --release --example scene_probe -- --inventory <inventory.json> <filter>
+//! cargo run -p lab-catalog --release --example scene_probe -- --coverage
+//! cargo run -p lab-catalog --release --example scene_probe -- --search <words>...
 //! ```
 
-use render_assets::{Assets, Body, Catalog, ChildSpec, InventoryNode};
+use lab_catalog::{Body, Catalog, ChildSpec, InventoryNode};
+use sc_render::Assets;
 
-fn print(s: &render_assets::SceneItem) {
+fn print(s: &sc_render::SceneItem) {
     println!("{}", serde_json::to_string_pretty(s).unwrap_or_default());
 }
 

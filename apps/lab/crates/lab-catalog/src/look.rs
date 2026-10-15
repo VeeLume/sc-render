@@ -14,6 +14,8 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use serde_json::Value;
 
+use sc_render::PartLook;
+
 use crate::{Error, Result};
 
 /// A saved character file.
@@ -25,20 +27,6 @@ pub struct CharacterFile {
     pub path: String,
     /// Last modified, seconds since the Unix epoch.
     pub modified: f64,
-}
-
-/// Colour overrides for one item of a character.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct PartLook {
-    /// The item's record GUID (as in the inventory dump and scene parts).
-    pub item: String,
-    /// The `.chf` material the values come from (`HairDyeMaterial`).
-    pub material: String,
-    /// Named numbers (`DyeAmount`, `BaseMelanin`).
-    pub params: Vec<(String, f32)>,
-    /// Named colours, sRGB bytes (`HairDyeColor1`, `EyeColor`).
-    pub colors: Vec<(String, [u8; 3])>,
 }
 
 /// A character's colour overrides, one entry per item that has any.

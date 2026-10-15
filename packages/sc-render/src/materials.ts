@@ -63,27 +63,11 @@
 //                  wear, and the game then draws the base layers only);
 //                  HEIGHT_MAP, vertex AO and the detail maps are not modelled.
 import * as THREE from 'three';
-import { commands, type LayerInfo, type MaterialInfo, type PartLook, type SubMaterialInfo } from '$lib/bindings';
-import { fetchHueLut, fetchTexture } from './protocol';
-import type { Palette } from './scene';
+import type { LayerInfo, PartLook, SubMaterialInfo } from './types';
+import type { Library } from './library';
+import type { Palette } from './cell';
 
 const NO_DRAW = new Set(['NoDraw']);
-
-const materialCache = new Map<string, Promise<MaterialInfo | null>>();
-
-export function loadMaterial(path: string): Promise<MaterialInfo | null> {
-	const key = path.toLowerCase();
-	let hit = materialCache.get(key);
-	if (!hit) {
-		hit = commands.loadMaterial(path).then((r) => {
-			if (r.status === 'ok') return r.data;
-			console.warn('material', path, r.error);
-			return null;
-		});
-		materialCache.set(key, hit);
-	}
-	return hit;
-}
 
 function slot(s: SubMaterialInfo, name: string) {
 	return s.textures.find((t) => t.slot === name);
@@ -148,16 +132,16 @@ function srgb(c: [number, number, number]): THREE.Color {
 }
 
 /** One submaterial; `null` for parts that are not drawn (proxies). */
-export async function buildMaterial(s: SubMaterialInfo, palette?: Palette, look?: PartLook): Promise<THREE.Material | null> {
+export async function buildMaterial(lib: Library, s: SubMaterialInfo, palette?: Palette, look?: PartLook): Promise<THREE.Material | null> {
 	if (NO_DRAW.has(s.shader) || s.name.startsWith('$')) return null;
-	if (s.shader.startsWith('LayerBlend')) return layerBlend(s, palette);
-	if (s.shader === 'GlassPBR') return glass(s);
-	if (s.shader === 'Organic') return organic(s);
-	if (s.shader === 'HairPBR') return hair(s, look);
-	return illum(s);
+	if (s.shader.startsWith('LayerBlend')) return layerBlend(lib, s, palette);
+	if (s.shader === 'GlassPBR') return glass(lib, s);
+	if (s.shader === 'Organic') return organic(lib, s);
+	if (s.shader === 'HairPBR') return hair(lib, s, look);
+	return illum(lib, s);
 }
 
-async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
+async function illum(lib: Library, s: SubMaterialInfo): Promise<THREE.Material> {
 	const m = new THREE.MeshPhysicalMaterial({
 		color: color(s.diffuse),
 		metalness: 0,
@@ -165,15 +149,15 @@ async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
 		side: THREE.FrontSide
 	});
 	const diff = slot(s, 'TexSlot1');
-	if (diff && !isNormal(diff.file)) m.map = await fetchTexture(diff.file, 'color');
+	if (diff && !isNormal(diff.file)) m.map = await lib.texture(diff.file, 'color');
 	const nrm = [slot(s, 'TexSlot2'), slot(s, 'TexSlot3')].find((t) => t && isNormal(t.file));
 	if (nrm) {
-		m.normalMap = await fetchTexture(nrm.file, 'normal');
+		m.normalMap = await lib.texture(nrm.file, 'normal');
 		m.normalScale.set(1, -1);
-		if (hasGloss(nrm.file)) m.roughnessMap = await fetchTexture(nrm.file, 'gloss');
+		if (hasGloss(nrm.file)) m.roughnessMap = await lib.texture(nrm.file, 'gloss');
 	}
 	const specSlot = s.features.includes('SPECULAR_MAP') ? slot(s, 'TexSlot4') : undefined;
-	const specMap = specSlot && m.map ? await fetchTexture(specSlot.file, 'color') : null;
+	const specMap = specSlot && m.map ? await lib.texture(specSlot.file, 'color') : null;
 	const hasGlossMap = !!m.roughnessMap;
 	m.onBeforeCompile = (shader) => {
 		Object.assign(shader.uniforms, {
@@ -209,7 +193,7 @@ async function illum(s: SubMaterialInfo): Promise<THREE.Material> {
 	return m;
 }
 
-async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
+async function glass(lib: Library, s: SubMaterialInfo): Promise<THREE.Material> {
 	const tint = color(s.diffuse);
 	const luminance = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b;
 	const m = new THREE.MeshPhysicalMaterial({
@@ -222,7 +206,7 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
 	});
 	const nrm = slot(s, 'TexSlot2');
 	if (nrm && isNormal(nrm.file)) {
-		m.normalMap = await fetchTexture(nrm.file, 'normal');
+		m.normalMap = await lib.texture(nrm.file, 'normal');
 		m.normalScale.set(1, -1);
 	}
 	const f0 = color(s.specular);
@@ -246,7 +230,7 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
  * BaseMelanin 0 leaves white x colour 2, and brows with #110500 there read
  * dark).
  */
-async function hair(s: SubMaterialInfo, look?: PartLook): Promise<THREE.Material> {
+async function hair(lib: Library, s: SubMaterialInfo, look?: PartLook): Promise<THREE.Material> {
 	const lookNum = (k: string) => look?.params.find(([key]) => key === k)?.[1];
 	const lookRgb = (k: string) => look?.colors.find(([key]) => key === k)?.[1];
 	const num = (k: string, fallback: number) => {
@@ -273,7 +257,7 @@ async function hair(s: SubMaterialInfo, look?: PartLook): Promise<THREE.Material
 		alphaToCoverage: true
 	});
 	const opacity = slot(s, 'TexSlot1');
-	if (opacity) m.alphaMap = await fetchTexture(opacity.file, 'mask');
+	if (opacity) m.alphaMap = await lib.texture(opacity.file, 'mask');
 	m.userData.noShadow = true;
 	const uniforms = {
 		uMelanin: { value: num('BaseMelanin', 0.5) },
@@ -354,15 +338,15 @@ float roughnessFactor = mix( hairRough, max( hairRough + 0.05, 0.15 ), smoothste
 	return m;
 }
 
-async function organic(s: SubMaterialInfo): Promise<THREE.Material> {
+async function organic(lib: Library, s: SubMaterialInfo): Promise<THREE.Material> {
 	const albedo = slot(s, 'TexSlot10') ?? slot(s, 'TexSlot3');
 	const m = new THREE.MeshPhysicalMaterial({ color: color(s.diffuse), metalness: 0, roughness: 1 });
-	if (albedo) m.map = await fetchTexture(albedo.file, 'color');
+	if (albedo) m.map = await lib.texture(albedo.file, 'color');
 	const nrm = slot(s, 'TexSlot2');
 	if (nrm && isNormal(nrm.file)) {
-		m.normalMap = await fetchTexture(nrm.file, 'normal');
+		m.normalMap = await lib.texture(nrm.file, 'normal');
 		m.normalScale.set(1, -1);
-		if (hasGloss(nrm.file)) m.roughnessMap = await fetchTexture(nrm.file, 'gloss');
+		if (hasGloss(nrm.file)) m.roughnessMap = await lib.texture(nrm.file, 'gloss');
 	}
 	const param = (k: string) => s.params.find(([key]) => key === k)?.[1];
 	const transmittance = (param('TransmittanceColor') ?? '').split(',').map(Number);
@@ -436,7 +420,7 @@ function specTint(sub: SubMaterialInfo, tint: THREE.Color): THREE.Color {
 }
 
 /** `parent`: the LayerBlend submaterial, whose Diffuse multiplies every layer's. */
-async function resolveLayer(l: LayerInfo | undefined, palette?: Palette, parent?: SubMaterialInfo): Promise<ResolvedLayer> {
+async function resolveLayer(lib: Library, l: LayerInfo | undefined, palette?: Palette, parent?: SubMaterialInfo): Promise<ResolvedLayer> {
 	// An empty slot, as the game's packer fills it: white, no specular, no gloss.
 	const fallback: ResolvedLayer = {
 		diff: null,
@@ -448,7 +432,7 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette, parent?
 		model: new THREE.Vector2()
 	};
 	if (!l) return fallback;
-	const mtl = await loadMaterial(l.path);
+	const mtl = await lib.material(l.path);
 	const sub = mtl?.submaterials.find((s) => s.name === l.submaterial) ?? mtl?.submaterials[0];
 	if (!sub) return { ...fallback, color: color(l.tint) };
 	const diffSlot = slot(sub, 'TexSlot1');
@@ -464,8 +448,8 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette, parent?
 	if (tints.spec) f0.multiply(specTint(sub, tint));
 	const layerTiling = Number(sub.params.find(([k]) => k === 'LayerTiling')?.[1] ?? 1) || 1;
 	return {
-		diff: diffSlot ? await fetchTexture(diffSlot.file, 'color') : null,
-		normalGloss: nrmSlot ? await fetchTexture(nrmSlot.file, 'normal_gloss') : null,
+		diff: diffSlot ? await lib.texture(diffSlot.file, 'color') : null,
+		normalGloss: nrmSlot ? await lib.texture(nrmSlot.file, 'normal_gloss') : null,
 		color: layerColor,
 		f0: entry && tints.spec ? srgb(entry.spec) : f0,
 		gloss: Math.min(1, (sub.shininess / 255) * l.gloss_mult) * (entry ? entry.gloss / 255 : 1),
@@ -482,28 +466,28 @@ FLAT_GLOSS.needsUpdate = true;
 const BLACK = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
 BLACK.needsUpdate = true;
 
-async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.Material> {
+async function layerBlend(lib: Library, s: SubMaterialInfo, palette?: Palette): Promise<THREE.Material> {
 	// Layers sit in the slot their name gives (BaseLayer1-4); a slot no layer
 	// names holds the packer's empty layer, matte white (the Horizon helmet's
 	// parts material names two; its blend-map black, slot 4, is white in game).
 	const named = [1, 2, 3, 4].map((n) => s.layers.find((l) => l.name === `BaseLayer${n}`));
 	if (!named.some(Boolean)) named[0] = s.layers[0];
-	const neutral = await resolveLayer(undefined, palette);
-	const layers = await Promise.all(named.map((l) => (l ? resolveLayer(l, palette, s) : undefined)));
+	const neutral = await resolveLayer(lib, undefined, palette);
+	const layers = await Promise.all(named.map((l) => (l ? resolveLayer(lib, l, palette, s) : undefined)));
 	const blendSlot = s.features.includes('BLEND_MAP') ? slot(s, 'TexSlot12') : undefined;
-	const blend = blendSlot ? await fetchTexture(blendSlot.file, 'mask') : null;
+	const blend = blendSlot ? await lib.texture(blendSlot.file, 'mask') : null;
 	const decalSlot =
 		s.features.includes('DECALS') && !s.features.includes('WEAR_DIRT_AO_VERTEX') ? slot(s, 'TexSlot9') : undefined;
-	const decal = decalSlot ? await fetchTexture(decalSlot.file, 'color') : null;
+	const decal = decalSlot ? await lib.texture(decalSlot.file, 'color') : null;
 	if (decal) decal.wrapS = decal.wrapT = THREE.ClampToEdgeWrapping;
 	const param = (k: string) => s.params.find(([key]) => key === k)?.[1];
 	const decalGloss = Number(param('DiffuseDecalGloss') ?? 10) / 255;
 	const decalSpec = (param('DiffuseDecalSpec') ?? '0.04,0.04,0.04').split(',').map(Number) as [number, number, number];
 	const macroSlot = [slot(s, 'TexSlot3'), slot(s, 'TexSlot2')].find((t) => t && isNormal(t.file));
-	const macro = macroSlot ? await fetchTexture(macroSlot.file, 'normal') : null;
+	const macro = macroSlot ? await lib.texture(macroSlot.file, 'normal') : null;
 	const halSlot = slot(s, 'TexSlot13');
-	const hal = halSlot ? await fetchTexture(halSlot.file, 'mask') : null;
-	const hueLut = hal ? await fetchHueLut() : null;
+	const hal = halSlot ? await lib.texture(halSlot.file, 'mask') : null;
+	const hueLut = hal ? await lib.hueLut() : null;
 	// Shader slots: the base drawn where the blend map is black (layer 4),
 	// then the layers its R, G, B channels mix in (layers 1, 2, 3). Without a
 	// blend map, layer 1 covers everything.

@@ -1,20 +1,53 @@
-//! Render inputs for the webview: typed commands for descriptions, and the
+//! sc-render for a Tauri webview: commands for the descriptions, and the
 //! `scr` URI scheme for the heavy bytes (model buffers, decoded textures),
-//! so they skip JSON. (`tauri dev` watches only this crate: after changing
-//! `crates/render-assets` or sc-holotable, touch a file here to rebuild.)
+//! so they skip JSON. The `@veelume/sc-render/tauri` source reads both.
 //!
-//! - `scr://localhost/model?path=…` — the packed buffer of a model loaded
-//!   with [`load_model`].
-//! - `scr://localhost/texture?path=…&kind=color|normal|gloss|normal_gloss&max=1024` —
-//!   8-byte header (width, height as `u32` LE) then RGBA8 rows.
+//! ```no_run
+//! tauri::Builder::default()
+//!     .plugin(tauri_plugin_sc_render::init())
+//! #   ;
+//! ```
+//!
+//! Capabilities: `sc-render:default`. Commands (`plugin:sc-render|…`):
+//! `load_model { path }` → `ModelInfo`, `load_material { path }` →
+//! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`. Scheme routes:
+//!
+//! - `scr://localhost/model?path=…`: the packed buffer of a model loaded
+//!   with `load_model`.
+//! - `scr://localhost/texture?path=…&kind=color|normal|gloss|normal_gloss&max=1024`:
+//!   header (width, height, sRGB flag, level count as `u32` LE), then every
+//!   level's RGBA8, largest first, each half the one before.
+//! - `scr://localhost/hue_lut`: header (width, height, depth as `u32` LE),
+//!   then RGBA8.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use render_assets::{Assets, BoneInfo, MaterialInfo, ModelInfo, TextureKind};
+use sc_render::{Assets, BoneInfo, MaterialInfo, ModelInfo, TextureKind};
 use tauri::http::{Request, Response, StatusCode};
-use tauri::{Manager, State, UriSchemeContext, UriSchemeResponder};
+use tauri::plugin::{Builder, TauriPlugin};
+use tauri::{Manager, Runtime, State, UriSchemeContext, UriSchemeResponder};
 
+pub use sc_render;
+
+/// The plugin: registers the commands, the `scr` scheme and [`RenderState`].
+pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    Builder::new("sc-render")
+        .invoke_handler(tauri::generate_handler![
+            load_model,
+            load_material,
+            load_skeleton
+        ])
+        .register_asynchronous_uri_scheme_protocol("scr", protocol)
+        .setup(|app, _| {
+            app.manage(RenderState::default());
+            Ok(())
+        })
+        .build()
+}
+
+/// The install the renderer reads, opened on first use, and the model
+/// buffers waiting to be fetched.
 #[derive(Default)]
 pub struct RenderState {
     assets: OnceLock<Arc<Assets>>,
@@ -22,6 +55,8 @@ pub struct RenderState {
 }
 
 impl RenderState {
+    /// The primary install, opened on first call. A host that reads the
+    /// DataCore too shares it from here.
     pub fn assets(&self) -> Result<Arc<Assets>, String> {
         if let Some(a) = self.assets.get() {
             return Ok(a.clone());
@@ -31,10 +66,20 @@ impl RenderState {
     }
 }
 
+/// [`RenderState`] from any app handle, window or webview.
+pub trait ScRenderExt<R: Runtime> {
+    fn sc_render(&self) -> State<'_, RenderState>;
+}
+
+impl<R: Runtime, T: Manager<R>> ScRenderExt<R> for T {
+    fn sc_render(&self) -> State<'_, RenderState> {
+        self.state::<RenderState>()
+    }
+}
+
 /// Load a geometry file; its buffer is then served at `scr://localhost/model`.
 #[tauri::command]
-#[specta::specta]
-pub async fn load_model(state: State<'_, RenderState>, path: String) -> Result<ModelInfo, String> {
+async fn load_model(state: State<'_, RenderState>, path: String) -> Result<ModelInfo, String> {
     let assets = state.assets()?;
     let p = path.clone();
     let model = tauri::async_runtime::spawn_blocking(move || assets.model(&p))
@@ -51,8 +96,7 @@ pub async fn load_model(state: State<'_, RenderState>, path: String) -> Result<M
 
 /// A `.chr` skeleton's bones.
 #[tauri::command]
-#[specta::specta]
-pub async fn load_skeleton(
+async fn load_skeleton(
     state: State<'_, RenderState>,
     path: String,
 ) -> Result<Vec<BoneInfo>, String> {
@@ -65,8 +109,7 @@ pub async fn load_skeleton(
 
 /// A `.mtl` file (extension optional).
 #[tauri::command]
-#[specta::specta]
-pub async fn load_material(
+async fn load_material(
     state: State<'_, RenderState>,
     path: String,
 ) -> Result<MaterialInfo, String> {
@@ -77,56 +120,8 @@ pub async fn load_material(
         .map_err(|e| e.to_string())
 }
 
-/// Save a rendered cell as `<app data>/snapshots/<name>.png`; returns the path.
-#[tauri::command]
-#[specta::specta]
-pub fn save_snapshot(app: tauri::AppHandle, name: String, png: Vec<u8>) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("snapshots");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let path = dir.join(format!("{safe}.png"));
-    std::fs::write(&path, png).map_err(|e| e.to_string())?;
-    Ok(path.display().to_string())
-}
-
-/// Save a render log next to the snapshots as `<name>.txt`.
-#[tauri::command]
-#[specta::specta]
-pub fn save_log(app: tauri::AppHandle, name: String, text: String) -> Result<(), String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("snapshots");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    std::fs::write(dir.join(format!("{safe}.txt")), text).map_err(|e| e.to_string())
-}
-
 /// The `scr` scheme handler; decoding runs off the webview thread.
-pub fn protocol<R: tauri::Runtime>(
+fn protocol<R: Runtime>(
     ctx: UriSchemeContext<'_, R>,
     request: Request<Vec<u8>>,
     responder: UriSchemeResponder,
@@ -198,8 +193,6 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
                 .assets()?
                 .texture(path, kind, max)
                 .map_err(|e| e.to_string())?;
-            // Header: width, height, sRGB flag, level count; then every
-            // level's RGBA8, largest first (each half the one before).
             let len = t.data.len() + t.mips.iter().map(|m| m.data.len()).sum::<usize>();
             let mut out = Vec::with_capacity(16 + len);
             out.extend(t.width.to_le_bytes());

@@ -2,11 +2,11 @@
 //! overrides of one (the newest, or the given file name).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example character_look -- [name]
+//! cargo run -p lab-catalog --release --example character_look -- [name]
 //! ```
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let files = render_assets::character_files()?;
+    let files = lab_catalog::character_files()?;
     for f in &files {
         println!("{:30} {}", f.name, f.path);
     }
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     println!("\n== {}", file.name);
-    for p in render_assets::character_look(&file.path)?.parts {
+    for p in lab_catalog::character_look(&file.path)?.parts {
         println!("{} {}", p.material, p.item);
         println!("  params {:?}", p.params);
         println!("  colors {:?}", p.colors);

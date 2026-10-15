@@ -2,10 +2,10 @@
 //! `TintMode` / `ShadingModel` and the layer material's own surface.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example mtl_dump -- <mtl path>
+//! cargo run -p sc-render --release --example mtl_dump -- <mtl path>
 //! ```
 
-use render_assets::Assets;
+use sc_render::Assets;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("mtl path")?;

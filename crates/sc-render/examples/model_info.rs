@@ -2,10 +2,10 @@
 //! node tree (name, parent, translation).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example model_info -- <geometry path>...
+//! cargo run -p sc-render --release --example model_info -- <geometry path>...
 //! ```
 
-use render_assets::Assets;
+use sc_render::Assets;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assets = Assets::open()?;

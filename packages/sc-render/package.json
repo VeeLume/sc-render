@@ -1,0 +1,46 @@
+{
+	"name": "@veelume/sc-render",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Star Citizen items rendered the way the game's inventory shows them, with three.js",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./tauri": {
+			"types": "./src/tauri.ts",
+			"default": "./src/tauri.ts"
+		},
+		"./svelte": {
+			"types": "./src/svelte/index.ts",
+			"svelte": "./src/svelte/index.ts",
+			"default": "./src/svelte/index.ts"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"src"
+	],
+	"peerDependencies": {
+		"three": ">=0.186 <0.187",
+		"@tauri-apps/api": "^2",
+		"svelte": "^5"
+	},
+	"devDependencies": {
+		"@tauri-apps/api": "^2",
+		"@types/three": "^0.186.0",
+		"svelte": "^5.54.0",
+		"three": "^0.186.1"
+	},
+	"peerDependenciesMeta": {
+		"@tauri-apps/api": {
+			"optional": true
+		},
+		"svelte": {
+			"optional": true
+		}
+	}
+}

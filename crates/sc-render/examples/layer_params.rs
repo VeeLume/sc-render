@@ -3,7 +3,7 @@
 //! keys, then a value histogram per key.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example layer_params -- TintMode LayerTiling ShadingModel
+//! cargo run -p sc-render --release --example layer_params -- TintMode LayerTiling ShadingModel
 //! ```
 
 use std::collections::BTreeMap;

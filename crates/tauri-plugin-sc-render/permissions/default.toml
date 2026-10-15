@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Load models, materials and skeletons; the scr scheme needs no permission."
+permissions = ["allow-load-model", "allow-load-material", "allow-load-skeleton"]

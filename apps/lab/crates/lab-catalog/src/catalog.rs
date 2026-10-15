@@ -1,8 +1,9 @@
 //! Items as render scenes, from the DataCore: [`Catalog`] parses it once and
 //! turns an item (and what is attached to it) into a [`SceneItem`], the tree
 //! the cell renderer draws. The assembly is sc-holotable's
-//! (`Visuals::scene`); this module adds the presentation choices that are
-//! ours, not the game's (the fallback pose), and the names the log shows.
+//! (`Visuals::scene`), the cell sc-render's; this module adds the
+//! presentation choices that are ours, not the game's (the fallback poses),
+//! and the names the log shows.
 
 use std::collections::HashMap;
 
@@ -10,25 +11,31 @@ use sc_extract::{
     AssetConfig, AssetData, CharacterDefinition, CrcIndex, Datacore, Guid, RecordCollection,
 };
 use sc_items::Items;
-use sc_items_visuals::{
-    Attached, InventoryView, Palette, Palettes, Part, Scene, SceneNote, Visual, Visuals,
-};
+use sc_items_visuals::{Attached, InventoryView, Palettes, Visual, Visuals};
+use sc_render::{Assets, Fallback, Pose, SceneItem};
 use serde::{Deserialize, Serialize};
 
-use crate::{Assets, Error, Result};
+use crate::{Error, Result};
 
-/// Pose for an item no inventory orientation entry matches: the game then
-/// shows a prop unturned, i.e. its back (Bosco rack). We show the front
-/// three-quarter instead, seen from slightly above (sc-item-render decision
-/// "Item icons aim to be recognisable"). The elevation turns about the
-/// screen's horizontal axis; a pitch in the offset would make the item lean.
-pub const FALLBACK_OFFSET: [f32; 3] = [0.0, 205.0, 0.0];
-pub const FALLBACK_ELEVATION: f32 = 8.0;
-
-/// Pose for a character (an actor: a bare `.chr` with the body skinned on):
-/// facing the viewer, turned a little, seen at eye level. From above, a
-/// standing figure looks as if it leaned back.
-pub const CHARACTER_OFFSET: [f32; 3] = [0.0, 200.0, 0.0];
+/// Poses for what the inventory view has no orientation entry for.
+///
+/// An item: the game shows a prop unturned, i.e. its back (Bosco rack). We
+/// show the front three-quarter instead, seen from slightly above
+/// (sc-item-render decision "Item icons aim to be recognisable").
+///
+/// A character (an actor: a bare `.chr` with the body skinned on): facing
+/// the viewer, turned a little, seen at eye level. From above, a standing
+/// figure looks as if it leaned back.
+pub const FALLBACK: Fallback = Fallback {
+    item: Pose {
+        offset: [0.0, 205.0, 0.0],
+        elevation: 8.0,
+    },
+    character: Pose {
+        offset: [0.0, 200.0, 0.0],
+        elevation: 0.0,
+    },
+};
 
 /// The character body an item is shown for (armor and clothing pick their
 /// variant by it); `sc_items_visuals::Body` with the app's IPC types.
@@ -71,90 +78,6 @@ pub struct ItemSummary {
     pub record: String,
     /// `Type/SubType`.
     pub kind: String,
-}
-
-/// An item to draw in one cell.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SceneItem {
-    pub id: String,
-    pub label: String,
-    pub root: ScenePart,
-    /// Category orientation offset, degrees (on top of the default 90, 0, 0).
-    pub offset: [f32; 3],
-    /// Extra viewing elevation, degrees (the fallback pose only).
-    pub elevation: f32,
-    pub rig: Vec<SceneLight>,
-    /// Cell width / height.
-    pub aspect: f32,
-    /// The inventory cell in grid units (width, height), when the item has one.
-    pub grid: Option<[u32; 2]>,
-    /// What could not be resolved (shown in the log).
-    pub notes: Vec<String>,
-}
-
-/// One item's geometry and what hangs on it.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ScenePart {
-    pub record: String,
-    /// The item's record GUID; empty for a `.cdf` part that is no item.
-    pub guid: String,
-    /// Drawn at the item origin.
-    pub pieces: Vec<ScenePiece>,
-    /// `.chr` whose bones the attachments name; without one they name
-    /// geometry nodes of the pieces.
-    pub skeleton: Option<String>,
-    pub attachments: Vec<SceneAttachment>,
-    pub palette: Option<[ScenePaletteEntry; 3]>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ScenePiece {
-    pub geometry: String,
-    /// `None`: the geometry's own `MtlName`.
-    pub material: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SceneAttachment {
-    /// Bone or geometry node; empty for a part skinned to this one's
-    /// skeleton, which sits at its origin (a body's head, a head's hair).
-    pub bone: String,
-    /// Offset from the bone: position, then rotation as a quaternion
-    /// `(x, y, z, w)` (a port helper's `Offset`, a `.cdf` part's
-    /// `RelPosition` / `RelRotation`).
-    pub offset_position: [f32; 3],
-    pub offset_rotation: [f32; 4],
-    /// The attached item's own helper (bone or node) that meets the bone,
-    /// instead of its origin (`ItemOffsetHelperName`).
-    pub item_helper: Option<String>,
-    pub part: ScenePart,
-}
-
-/// A palette entry, sRGB bytes; gloss 0..=255.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ScenePaletteEntry {
-    pub tint: [u8; 3],
-    pub spec: [u8; 3],
-    pub gloss: u8,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SceneLight {
-    pub name: String,
-    pub pos: [f32; 3],
-    /// `Ang3` degrees; projectors shine along local +X.
-    pub rot: [f32; 3],
-    pub color: [f32; 3],
-    pub intensity: f32,
-    pub radius: f32,
-    pub fov: f32,
-    pub casts_shadows: bool,
 }
 
 /// An attached item, as an inventory dump reports it.
@@ -305,7 +228,7 @@ impl Catalog {
             .get(&guid)
             .ok_or_else(|| Error::Catalog(format!("{guid} has no geometry")))?;
         let attached = children.map(attached);
-        let scene: Scene = self
+        let scene = self
             .visuals
             .scene(
                 &self.palettes,
@@ -315,111 +238,20 @@ impl Catalog {
                 |path| CharacterDefinition::read(assets.source(), path).map_err(|e| e.to_string()),
             )
             .ok_or_else(|| Error::Catalog(format!("{guid}: no geometry path")))?;
-        let mut notes: Vec<String> = scene.notes.iter().map(|n| self.note(n)).collect();
-        let root = self.scene_part(&scene.root, "");
-        let (offset, elevation) = match self.view.orientation(item, visual) {
-            Some(o) => (o, 0.0),
-            None if scene.is_character() => (CHARACTER_OFFSET, 0.0),
-            None => {
-                notes.push("no inventory orientation entry: fallback pose".into());
-                (FALLBACK_OFFSET, FALLBACK_ELEVATION)
-            }
-        };
-        let rig = self
-            .view
-            .light_group(item, visual)
-            .and_then(|g| self.view.rig(&g))
-            .map(|r| {
-                r.lights
-                    .iter()
-                    .filter(|l| l.active)
-                    .map(|l| SceneLight {
-                        name: l.name.trim_start_matches("SLightItem_").to_string(),
-                        pos: l.position,
-                        rot: l.rotation,
-                        color: l.color,
-                        intensity: l.intensity,
-                        radius: l.radius,
-                        fov: l.fov,
-                        casts_shadows: l.casts_shadows,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let aspect = visual.grid.map_or(1.0, |[w, h]| w as f32 / h as f32);
-        Ok(SceneItem {
-            grid: visual.grid,
-            id: guid.to_string(),
-            label: self.label(&guid),
-            root,
-            offset,
-            elevation,
-            rig,
-            aspect,
-            notes,
-        })
-    }
-
-    /// The renderer's view of a part: names for the log, palette as bytes,
-    /// a skinned attachment's bone empty.
-    fn scene_part(&self, part: &Part, parent: &str) -> ScenePart {
-        let record = match (&part.item, &part.cdf_attachment) {
-            (Some(g), _) => self
-                .records
-                .get(g)
-                .cloned()
-                .unwrap_or_else(|| g.to_string()),
-            (None, Some(a)) => format!("{parent} / {a}"),
-            (None, None) => parent.to_string(),
-        };
-        ScenePart {
-            guid: part.item.map(|g| g.to_string()).unwrap_or_default(),
-            pieces: part
-                .pieces
-                .iter()
-                .map(|p| ScenePiece {
-                    geometry: p.geometry.clone(),
-                    material: p.material.clone(),
-                })
-                .collect(),
-            skeleton: part.skeleton.clone(),
-            attachments: part
-                .attachments
-                .iter()
-                .map(|a| SceneAttachment {
-                    bone: a.bone.clone().unwrap_or_default(),
-                    offset_position: a.offset.position,
-                    offset_rotation: a.offset.rotation,
-                    item_helper: a.item_helper.clone(),
-                    part: self.scene_part(&a.part, &record),
-                })
-                .collect(),
-            palette: part.palette.as_ref().map(palette_entries),
-            record,
-        }
-    }
-
-    fn note(&self, n: &SceneNote) -> String {
-        let name = |g: &Guid| {
-            self.records
-                .get(g)
-                .cloned()
-                .unwrap_or_else(|| g.to_string())
-        };
-        match n {
-            SceneNote::NoGeometry { item } => format!("{}: no geometry for these tags", name(item)),
-            SceneNote::CdfUnreadable { path, reason } => format!("{path}: {reason}"),
-            SceneNote::CdfAttachmentSkipped { path, attachment } => {
-                format!("{path}: attachment {attachment} skipped")
-            }
-            SceneNote::NoPort { item, port } => {
-                format!("{}: no port {port} with a helper", name(item))
-            }
-            SceneNote::TooDeep { item } => {
-                format!("{}: nested too deep, children dropped", name(item))
-            }
-            other => format!("{other:?}"),
-        }
+        Ok(SceneItem::new(
+            &scene,
+            item,
+            visual,
+            &self.view,
+            &FALLBACK,
+            self.label(&guid),
+            |g| {
+                self.records
+                    .get(g)
+                    .cloned()
+                    .unwrap_or_else(|| g.to_string())
+            },
+        ))
     }
 
     /// Resolve a Starlume `inventory.json` dump: class CRCs to items, port
@@ -502,14 +334,6 @@ impl Catalog {
 fn parse_guid(s: &str) -> Result<Guid> {
     s.parse()
         .map_err(|_| Error::Catalog(format!("not a GUID: {s}")))
-}
-
-fn palette_entries(p: &Palette) -> [ScenePaletteEntry; 3] {
-    p.entries.map(|e| ScenePaletteEntry {
-        tint: e.tint,
-        spec: e.spec,
-        gloss: e.glossiness,
-    })
 }
 
 /// An inventory dump's attachments as holotable's; entries whose GUID does

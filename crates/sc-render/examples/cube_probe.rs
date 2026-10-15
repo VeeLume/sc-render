@@ -3,7 +3,7 @@
 //! `x / (1 + x)` when the format is HDR.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example cube_probe -- [path] [out.ppm]
+//! cargo run -p sc-render --release --example cube_probe -- [path] [out.ppm]
 //! ```
 
 use image_dds::{Surface, ddsfile::Dds, image};

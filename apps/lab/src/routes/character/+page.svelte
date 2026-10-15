@@ -2,10 +2,10 @@
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Button, Segmented, Surface, storedValue } from '@veelume/ui';
-	import type { Cell } from '$lib/render/scene';
-	import Viewport from '$lib/render/Viewport.svelte';
+	import { AXIS_LOCKS, VIEW_HINT, type AxisLock, type Cell } from '@veelume/sc-render';
+	import { Viewport } from '@veelume/sc-render/svelte';
+	import { tauriSource } from '@veelume/sc-render/tauri';
 	import RenderLog from '$lib/components/RenderLog.svelte';
-	import { AXIS_LOCKS, VIEW_HINT, type AxisLock } from '$lib/render/viewControls';
 	import {
 		commands,
 		type Body,
@@ -201,7 +201,7 @@
 				</div>
 			</aside>
 			<div class="min-w-0 flex-1">
-				<Viewport bind:cell {axisLock} {busy} />
+				<Viewport source={tauriSource()} bind:cell {axisLock} {busy} class="rounded-lg border bg-[#1c2632]" />
 			</div>
 		</div>
 	{/snippet}

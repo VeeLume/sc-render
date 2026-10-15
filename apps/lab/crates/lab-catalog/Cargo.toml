@@ -1,0 +1,23 @@
+[package]
+name = "lab-catalog"
+version = "0.1.0"
+edition = "2024"
+description = "The lab's item catalog: DataCore items as render scenes, Starlume inventory dumps, saved-character colours"
+publish = false
+
+[dependencies]
+sc-discovery = { workspace = true }
+sc-extract = { workspace = true }
+sc-items = { workspace = true }
+sc-items-visuals = { workspace = true }
+sc-render = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+specta = { workspace = true, optional = true }
+# CHF (saved character) parsing; MIT, pinned to a commit like starchar does.
+starbreaker-chf = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+
+[features]
+default = []
+specta = ["dep:specta", "sc-render/specta"]

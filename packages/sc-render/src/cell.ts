@@ -5,16 +5,9 @@
 // fitted to 70% of the cell's width, height and depth, lit by its category's
 // light group (rotated (90,180,0), projectors along local +X).
 import * as THREE from 'three';
-import {
-	commands,
-	type BoneInfo,
-	type ModelInfo,
-	type SceneItem,
-	type ScenePaletteEntry,
-	type ScenePart,
-	type SubMaterialInfo, type PartLook } from '$lib/bindings';
-import { fetchModelBuffer } from './protocol';
-import { buildMaterial, loadMaterial } from './materials';
+import type { BoneInfo, ModelInfo, PartLook, SceneItem, ScenePaletteEntry, ScenePart, SubMaterialInfo } from './types';
+import { Library, type RenderSource } from './library';
+import { buildMaterial } from './materials';
 /** A tint palette: entries A, B, C. */
 export type Palette = ScenePaletteEntry[];
 
@@ -67,7 +60,7 @@ const TONE_MAPS: Record<ToneMap, THREE.ToneMapping> = {
 	linear: THREE.LinearToneMapping
 };
 
-/** A saved character's colour overrides by item GUID (see `characterLook`). */
+/** A character's colour overrides by item GUID. */
 export type Looks = Map<string, PartLook>;
 
 export class Cell {
@@ -85,11 +78,17 @@ export class Cell {
 	private ambient = new THREE.AmbientLight(0x9aa6b8, 0.05);
 	private envMap: THREE.Texture | null = null;
 	private shaderErrors: string[] = [];
+	private readonly lib: Library;
 
 	/** Cell width / height; set per item in `show`. */
 	aspect = 1;
 
-	constructor(readonly canvas: HTMLCanvasElement) {
+	/** A cell drawing on `canvas` from `source`; cells on one source share its caches. */
+	constructor(
+		readonly canvas: HTMLCanvasElement,
+		source: RenderSource
+	) {
+		this.lib = Library.of(source);
 		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 		this.renderer.toneMapping = THREE.LinearToneMapping;
@@ -178,11 +177,11 @@ export class Cell {
 
 		this.aspect = fx.aspect;
 		for (const n of fx.notes) log.push(`note: ${n}`);
-		const rig = new CharacterRig(fx.root);
+		const rig = new CharacterRig(this.lib, fx.root);
 		const character = !!fx.root.skeleton?.toLowerCase().endsWith('.chr') && fx.root.pieces.length === 0;
 		await rig.init(pose ?? character);
 		for (const n of rig.notes) log.push(`pose: ${n}`);
-		const model = await buildItem(fx.root, log, 0, rig, looks);
+		const model = await buildItem(this.lib, fx.root, log, 0, rig, looks);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -460,7 +459,6 @@ const boneMatrix = (b: BoneInfo) =>
  */
 class CharacterRig {
 	private readonly skins: string[] = [];
-	private readonly loaded = new Map<string, Promise<BoneInfo[]>>();
 	/** Base skeleton by lower-case name: bind matrix and parent name. */
 	private readonly base = new Map<string, { bind: THREE.Matrix4; parent: string | null }>();
 	private readonly posedBase = new Map<string, THREE.Matrix4>();
@@ -470,7 +468,10 @@ class CharacterRig {
 	/** What the pose did, for the render log. */
 	notes: string[] = [];
 
-	constructor(private readonly root: ScenePart) {
+	constructor(
+		private readonly lib: Library,
+		private readonly root: ScenePart
+	) {
 		const walk = (p: ScenePart) => {
 			for (const piece of p.pieces) if (piece.geometry.toLowerCase().endsWith('.skin')) this.skins.push(piece.geometry);
 			for (const a of p.attachments) walk(a.part);
@@ -482,9 +483,8 @@ class CharacterRig {
 	async init(pose: boolean) {
 		const chr = this.root.skeleton;
 		if (!pose || !chr?.toLowerCase().endsWith('.chr')) return;
-		const res = await commands.loadSkeleton(chr);
-		if (res.status !== 'ok') return;
-		const bones = res.data;
+		const bones = await this.lib.skeleton(chr);
+		if (!bones.length) return;
 		for (const b of bones) {
 			const parent = b.parent != null ? bones[b.parent]?.name.toLowerCase() ?? null : null;
 			this.base.set(b.name.toLowerCase(), { bind: boneMatrix(b), parent });
@@ -495,12 +495,7 @@ class CharacterRig {
 	}
 
 	skinBones(skin: string): Promise<BoneInfo[]> {
-		let bones = this.loaded.get(skin);
-		if (!bones) {
-			bones = commands.loadSkeleton(skin).then((r) => (r.status === 'ok' ? r.data : []));
-			this.loaded.set(skin, bones);
-		}
-		return bones;
+		return this.lib.skeleton(skin);
 	}
 
 	/** A bone the base lacks, from the first worn skin that has it. */
@@ -614,6 +609,7 @@ function standingPose(
  * palette, not its parent's.
  */
 async function buildItem(
+	lib: Library,
 	item: ScenePart,
 	log: string[],
 	depth: number,
@@ -624,11 +620,9 @@ async function buildItem(
 	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
 	for (const piece of item.pieces) {
-		const res = await commands.loadModel(piece.geometry);
-		if (res.status !== 'ok') throw new Error(res.error);
-		const info = res.data;
+		const { info, buffer } = await lib.model(piece.geometry);
 		const mtlPath = piece.material ?? info.material;
-		const mtl = mtlPath ? await loadMaterial(mtlPath) : null;
+		const mtl = mtlPath ? await lib.material(mtlPath) : null;
 		log.push(`${pad}  ${piece.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
 		log.push(`${pad}    material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
 		const look = looks.get(item.guid);
@@ -637,15 +631,10 @@ async function buildItem(
 			character.posing && info.joints_offset != null && piece.geometry.toLowerCase().endsWith('.skin')
 				? { bones: await character.skinBones(piece.geometry), rig: character }
 				: undefined;
-		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin));
+		group.add(await buildModel(lib, info, buffer, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin));
 	}
 	if (!item.attachments.length) return group;
-	let bones: BoneInfo[] = [];
-	if (item.skeleton) {
-		const res = await commands.loadSkeleton(item.skeleton);
-		if (res.status !== 'ok') throw new Error(res.error);
-		bones = res.data;
-	}
+	const bones = item.skeleton ? await lib.skeleton(item.skeleton) : [];
 	for (const at of item.attachments) {
 		const name = at.bone.toLowerCase();
 		let bone = name ? bones.find((b) => b.name.toLowerCase() === name) : undefined;
@@ -678,14 +667,14 @@ async function buildItem(
 		}
 		const on = name ? `${at.bone} (${bone || posed ? 'bone' : 'node'})` : 'its skeleton (skinned)';
 		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
-		const child = await buildItem(at.part, log, depth + 1, character, looks);
+		const child = await buildItem(lib, at.part, log, depth + 1, character, looks);
 		// The port's offset, then the child moved so its own helper (not its
 		// origin) sits on the port.
 		const holder = new THREE.Group();
 		holder.position.set(...at.offset_position);
 		holder.quaternion.set(...at.offset_rotation);
 		if (at.item_helper) {
-			const h = await helperMatrix(at.part, child, at.item_helper);
+			const h = await helperMatrix(lib, at.part, child, at.item_helper);
 			if (h) {
 				child.matrix.copy(h.invert());
 				child.matrixAutoUpdate = false;
@@ -701,11 +690,10 @@ async function buildItem(
  * An item's helper (a bone of its skeleton, else a node of its geometry) in
  * the item's own space.
  */
-async function helperMatrix(part: ScenePart, group: THREE.Object3D, name: string): Promise<THREE.Matrix4 | null> {
+async function helperMatrix(lib: Library, part: ScenePart, group: THREE.Object3D, name: string): Promise<THREE.Matrix4 | null> {
 	const lower = name.toLowerCase();
 	if (part.skeleton) {
-		const res = await commands.loadSkeleton(part.skeleton);
-		const bone = res.status === 'ok' ? res.data.find((b) => b.name.toLowerCase() === lower) : undefined;
+		const bone = (await lib.skeleton(part.skeleton)).find((b) => b.name.toLowerCase() === lower);
 		if (bone)
 			return new THREE.Matrix4().compose(
 				new THREE.Vector3(...bone.position),
@@ -729,14 +717,15 @@ interface SkinBinding {
 }
 
 async function buildModel(
+	lib: Library,
 	info: ModelInfo,
+	buf: ArrayBuffer,
 	subs: SubMaterialInfo[],
 	log: string[],
 	palette?: Palette,
 	look?: PartLook,
 	skin?: SkinBinding
 ) {
-	const buf = await fetchModelBuffer(info.path);
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
 		position: new THREE.BufferAttribute(new Float32Array(buf, info.positions_offset, n * 3), 3)
@@ -791,7 +780,7 @@ async function buildModel(
 	for (const sm of info.submeshes) {
 		const sub = subs[sm.material];
 		if (!materialCache.has(sm.material)) {
-			materialCache.set(sm.material, sub ? buildMaterial(sub, palette, look) : Promise.resolve(null));
+			materialCache.set(sm.material, sub ? buildMaterial(lib, sub, palette, look) : Promise.resolve(null));
 		}
 		const material = await materialCache.get(sm.material)!;
 		if (!material) {

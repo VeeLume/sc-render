@@ -1,22 +1,26 @@
 [package]
-name = "render-assets"
+name = "sc-render"
 version = "0.1.0"
 edition = "2024"
-description = "Reads Star Citizen models, materials and textures from the local install and prepares them for a renderer"
+description = "Star Citizen models, materials and textures from the local install, prepared for a GPU renderer"
 
 [dependencies]
-sc-discovery = { path = "../../../sc-holotable/crates/sc-discovery" }
-sc-extract = { path = "../../../sc-holotable/crates/sc-extract" }
-sc-items = { path = "../../../sc-holotable/crates/sc-items" }
-sc-items-visuals = { path = "../../../sc-holotable/crates/sc-items-visuals" }
-serde_json = "1"
-# CHF (saved character) parsing; MIT, pinned to a commit like starchar does.
-starbreaker-chf = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-specta = { version = "=2.0.0-rc.22", features = ["derive"], optional = true }
+sc-discovery = { workspace = true }
+sc-extract = { workspace = true }
+sc-items = { workspace = true }
+sc-items-visuals = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+specta = { workspace = true, optional = true }
 image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+
+[dev-dependencies]
+specta-typescript = { workspace = true }
 
 [features]
 default = []
 specta = ["dep:specta"]
+
+[[example]]
+name = "export_types"
+required-features = ["specta"]

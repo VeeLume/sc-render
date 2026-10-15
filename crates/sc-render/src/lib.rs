@@ -1,22 +1,21 @@
 //! Star Citizen render inputs, read from the local install and shaped for a
 //! GPU renderer: models as one packed vertex/index buffer plus a description
 //! ([`ModelInfo`]), materials as plain data ([`MaterialInfo`]), textures as
-//! decoded RGBA8 ([`Rgba`]).
+//! decoded RGBA8 ([`Rgba`]); and the scene a cell draws ([`SceneItem`]),
+//! built from sc-holotable's assembled item.
 //!
 //! Nothing here ships game data: everything is read from the user's own
 //! `Data.p4k` at runtime.
 
-mod catalog;
-mod look;
 mod model;
+mod scene;
 mod texture;
 
-pub use catalog::{
-    Body, Catalog, ChildSpec, FALLBACK_ELEVATION, FALLBACK_OFFSET, InventoryNode, ItemSummary,
-    SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
-};
-pub use look::{CharacterFile, CharacterLook, PartLook, character_files, character_look};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
+pub use scene::{
+    Fallback, PartLook, Pose, SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart,
+    ScenePiece,
+};
 pub use texture::{Mip, Rgba, TextureKind, Volume};
 
 use std::collections::HashMap;
@@ -33,8 +32,6 @@ pub enum Error {
     Extract(#[from] sc_extract::Error),
     #[error("texture decode failed: {0}")]
     Decode(String),
-    #[error("{0}")]
-    Catalog(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -50,10 +47,15 @@ impl Assets {
     pub fn open() -> Result<Self> {
         let install =
             sc_discovery::discover_primary().map_err(|e| Error::Discovery(e.to_string()))?;
-        Ok(Self {
-            source: AssetSource::from_install(&install)?,
+        Ok(Self::new(AssetSource::from_install(&install)?))
+    }
+
+    /// Read from an archive the host already opened.
+    pub fn new(source: AssetSource) -> Self {
+        Self {
+            source,
             textures: Mutex::default(),
-        })
+        }
     }
 
     /// The install's archive.

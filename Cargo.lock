@@ -2243,6 +2243,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lab-catalog"
+version = "0.1.0"
+dependencies = [
+ "sc-discovery",
+ "sc-extract",
+ "sc-items",
+ "sc-items-visuals",
+ "sc-render",
+ "serde",
+ "serde_json",
+ "specta",
+ "starbreaker-chf",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3221,22 +3237,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "render-assets"
-version = "0.1.0"
-dependencies = [
- "image_dds",
- "sc-discovery",
- "sc-extract",
- "sc-items",
- "sc-items-visuals",
- "serde",
- "serde_json",
- "specta",
- "starbreaker-chf",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "reqwest"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3436,6 +3436,7 @@ dependencies = [
 [[package]]
 name = "sc-discovery"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.21.0#a99491fbb2a51044330f24c812d40e7a426796e2"
 dependencies = [
  "aes",
  "cbc",
@@ -3451,6 +3452,7 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.21.0#a99491fbb2a51044330f24c812d40e7a426796e2"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3473,6 +3475,7 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.21.0#a99491fbb2a51044330f24c812d40e7a426796e2"
 dependencies = [
  "serde",
  "svarog-common",
@@ -3483,7 +3486,8 @@ dependencies = [
 name = "sc-item-render"
 version = "0.1.0"
 dependencies = [
- "render-assets",
+ "lab-catalog",
+ "sc-render",
  "serde",
  "serde_json",
  "specta",
@@ -3492,14 +3496,15 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-process",
+ "tauri-plugin-sc-render",
  "tauri-plugin-updater",
  "tauri-specta",
- "urlencoding",
 ]
 
 [[package]]
 name = "sc-items"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.21.0#a99491fbb2a51044330f24c812d40e7a426796e2"
 dependencies = [
  "sc-extract",
  "serde",
@@ -3509,11 +3514,27 @@ dependencies = [
 [[package]]
 name = "sc-items-visuals"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.21.0#a99491fbb2a51044330f24c812d40e7a426796e2"
 dependencies = [
  "sc-extract",
  "sc-items",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "sc-render"
+version = "0.1.0"
+dependencies = [
+ "image_dds",
+ "sc-discovery",
+ "sc-extract",
+ "sc-items",
+ "sc-items-visuals",
+ "serde",
+ "specta",
+ "specta-typescript",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4426,6 +4447,16 @@ checksum = "74ae3d8549ae564c0397377373e262f340908eb23a5b9fbe03f2a00007dc0038"
 dependencies = [
  "tauri",
  "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-sc-render"
+version = "0.1.0"
+dependencies = [
+ "sc-render",
+ "tauri",
+ "tauri-plugin",
+ "urlencoding",
 ]
 
 [[package]]

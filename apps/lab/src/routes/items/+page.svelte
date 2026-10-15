@@ -21,12 +21,12 @@
 		type Row,
 		type SortDef
 	} from '@veelume/ui';
-	import type { Cell } from '$lib/render/scene';
-	import Viewport from '$lib/render/Viewport.svelte';
+	import { AXIS_LOCKS, VIEW_HINT, type AxisLock, type Cell } from '@veelume/sc-render';
+	import { Viewport } from '@veelume/sc-render/svelte';
+	import { tauriSource } from '@veelume/sc-render/tauri';
 	import Slider from '$lib/components/Slider.svelte';
 	import Facts from '$lib/components/Facts.svelte';
 	import RenderLog from '$lib/components/RenderLog.svelte';
-	import { AXIS_LOCKS, VIEW_HINT, type AxisLock } from '$lib/render/viewControls';
 	import { commands, type Body, type ChildSpec, type InventoryNode, type SceneItem } from '$lib/bindings';
 
 	/**
@@ -323,7 +323,7 @@
 			>
 				{#snippet main()}
 					<div class="relative h-full">
-						<Viewport bind:cell {axisLock} {busy} />
+						<Viewport source={tauriSource()} bind:cell {axisLock} {busy} class="rounded-lg border bg-[#1c2632]" />
 						{#if !current && !busy}
 							<div class="pointer-events-none absolute inset-0 grid">
 								<Placeholder>Pick an item to render it.</Placeholder>

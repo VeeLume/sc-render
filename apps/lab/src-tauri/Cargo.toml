@@ -39,16 +39,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Typed IPC: every #[specta::specta] command is exported to src/lib/bindings.ts
-# on debug builds. Pinned — the rc versions of these three must agree.
-specta = "=2.0.0-rc.22"
-specta-typescript = "0.0.9"
+# on debug builds. Pinned (workspace): the rc versions of these three must agree.
+specta = { workspace = true }
+specta-typescript = { workspace = true }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
-urlencoding = "2"
-render-assets = { version = "0.1.0", path = "../crates/render-assets", features = ["specta"] }
+lab-catalog = { path = "../crates/lab-catalog", features = ["specta"] }
+sc-render = { workspace = true, features = ["specta"] }
+tauri-plugin-sc-render = { workspace = true }
 
 # Desktop-only: the signed auto-updater and the relaunch that follows it.
 # Mobile has no Tauri updater (Android ships its own APK flow).

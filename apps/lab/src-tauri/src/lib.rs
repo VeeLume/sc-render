@@ -1,7 +1,7 @@
 mod catalog;
 mod commands;
-mod render;
 mod settings;
+mod snapshot;
 mod state;
 mod store;
 
@@ -31,11 +31,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         commands::settings_get,
         commands::settings_save,
-        render::load_model,
-        render::load_material,
-        render::load_skeleton,
-        render::save_snapshot,
-        render::save_log,
+        snapshot::save_snapshot,
+        snapshot::save_log,
         catalog::list_items,
         catalog::search_items,
         catalog::item_scene,
@@ -61,9 +58,8 @@ pub fn run() {
     let mut app = tauri::Builder::default();
 
     app.plugin(tauri_plugin_opener::init())
-        .manage(render::RenderState::default())
+        .plugin(tauri_plugin_sc_render::init())
         .manage(catalog::CatalogState::default())
-        .register_asynchronous_uri_scheme_protocol("scr", render::protocol)
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

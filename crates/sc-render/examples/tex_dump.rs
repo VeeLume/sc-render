@@ -2,10 +2,10 @@
 //! the right by its R, G, B and A channels as greyscale.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example tex_dump -- <out dir> [--kind color|normal|gloss|normal_gloss] <texture path>...
+//! cargo run -p sc-render --release --example tex_dump -- <out dir> [--kind color|normal|gloss|normal_gloss] <texture path>...
 //! ```
 
-use render_assets::{Assets, TextureKind};
+use sc_render::{Assets, TextureKind};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

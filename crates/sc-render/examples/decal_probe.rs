@@ -4,7 +4,7 @@
 //! submesh material.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example decal_probe -- <geometry path>
+//! cargo run -p sc-render --release --example decal_probe -- <geometry path>
 //! ```
 
 use std::collections::BTreeMap;

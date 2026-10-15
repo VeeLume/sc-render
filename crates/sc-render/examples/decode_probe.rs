@@ -2,10 +2,10 @@
 //! ranges, to check each DDS format decodes.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example decode_probe
+//! cargo run -p sc-render --release --example decode_probe
 //! ```
 
-use render_assets::{Assets, TextureKind};
+use sc_render::{Assets, TextureKind};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assets = Assets::open()?;

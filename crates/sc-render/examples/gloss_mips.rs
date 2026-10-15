@@ -2,7 +2,7 @@
 //! chain (the separate `.a` gloss texture, else the main alpha).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example gloss_mips -- <ddna path>...
+//! cargo run -p sc-render --release --example gloss_mips -- <ddna path>...
 //! ```
 
 use image_dds::ddsfile::Dds;

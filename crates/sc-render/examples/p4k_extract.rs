@@ -1,7 +1,7 @@
 //! Copy one file out of `Data.p4k` to disk.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example p4k_extract -- <p4k path> <out file>
+//! cargo run -p sc-render --release --example p4k_extract -- <p4k path> <out file>
 //! ```
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

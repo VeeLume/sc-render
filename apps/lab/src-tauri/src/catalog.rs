@@ -4,10 +4,10 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use render_assets::{Body, Catalog, ChildSpec, InventoryNode, ItemSummary, SceneItem};
+use lab_catalog::{Body, Catalog, ChildSpec, InventoryNode, ItemSummary};
+use sc_render::SceneItem;
 use tauri::{AppHandle, Manager};
-
-use crate::render::RenderState;
+use tauri_plugin_sc_render::ScRenderExt;
 
 #[derive(Default)]
 pub struct CatalogState {
@@ -19,7 +19,7 @@ pub fn start_loading(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let loaded = app
-            .state::<RenderState>()
+            .sc_render()
             .assets()
             .and_then(|a| Catalog::load(&a).map_err(|e| e.to_string()))
             .map(Arc::new);
@@ -72,7 +72,7 @@ pub async fn item_scene(
 ) -> Result<SceneItem, String> {
     blocking(move || {
         let catalog = wait(&app)?;
-        let assets = app.state::<RenderState>().assets()?;
+        let assets = app.sc_render().assets()?;
         catalog
             .scene(
                 &assets,
@@ -103,15 +103,15 @@ pub async fn load_inventory(
 /// The install's saved characters (`.chf`), newest first.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_character_files() -> Result<Vec<render_assets::CharacterFile>, String> {
-    blocking(|| render_assets::character_files().map_err(|e| e.to_string())).await
+pub async fn list_character_files() -> Result<Vec<lab_catalog::CharacterFile>, String> {
+    blocking(|| lab_catalog::character_files().map_err(|e| e.to_string())).await
 }
 
 /// A saved character's colour overrides (hair and brow dye, eye and skin).
 #[tauri::command]
 #[specta::specta]
-pub async fn character_look(path: String) -> Result<render_assets::CharacterLook, String> {
-    blocking(move || render_assets::character_look(path).map_err(|e| e.to_string())).await
+pub async fn character_look(path: String) -> Result<lab_catalog::CharacterLook, String> {
+    blocking(move || lab_catalog::character_look(path).map_err(|e| e.to_string())).await
 }
 
 /// The player's character (actor, body, everything worn) from the same

@@ -1,16 +1,31 @@
-# Virtual workspace root — lets cargo, `just`, and the git hooks run from the
-# repo root while the app crate lives at src-tauri/. Feature and service crates
-# go in crates/ and are picked up by the glob.
+# Virtual workspace root: lets cargo, `just` and the git hooks run from the
+# repo root. The library crates live in crates/, the lab app's shell at
+# apps/lab/src-tauri and its own crates in apps/lab/crates/.
 [workspace]
 resolver = "2"
-members = ["src-tauri", "crates/*"]
+members = ["crates/*", "apps/lab/src-tauri", "apps/lab/crates/*"]
+
+[workspace.dependencies]
+# Game data: readers, item recipes and scene assembly. Bump all four together.
+sc-discovery = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.21.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.21.0" }
+sc-items = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.21.0" }
+sc-items-visuals = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.21.0" }
+sc-render = { path = "crates/sc-render" }
+tauri-plugin-sc-render = { path = "crates/tauri-plugin-sc-render" }
+# Pinned: the rc versions of specta, specta-typescript and tauri-specta must agree.
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+specta-typescript = "0.0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 
 # Profiles must live at the workspace root — member profiles are ignored.
 [profile.dev]
 incremental = true
 
 # Dependencies optimised in dev builds too: a debug DataCore parse (sc-extract,
-# svarog) is tens of times slower, and the catalog parses it at startup.
+# svarog) is tens of times slower, and the lab's catalog parses it at startup.
 [profile.dev.package."*"]
 opt-level = 2
 

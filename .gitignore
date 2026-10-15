@@ -1,0 +1,17 @@
+# Build artifacts
+/target
+**/target
+node_modules/
+dist/
+build/
+.svelte-kit/
+
+# Secrets — never commit
+*.key
+*.pem
+*.pfx
+.env
+.env.*
+*service-account*.json
+serviceAccountKey.json
+appwrite_key

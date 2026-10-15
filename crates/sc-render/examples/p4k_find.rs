@@ -2,7 +2,7 @@
 //! (case-insensitive), with their sizes.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example p4k_find -- <substring>...
+//! cargo run -p sc-render --release --example p4k_find -- <substring>...
 //! ```
 
 use sc_extract::AssetSource;

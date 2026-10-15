@@ -1,0 +1,6 @@
+# LF everywhere, whatever core.autocrlf says. CI runs on windows-latest, where
+# autocrlf=true would check out CRLF and prettier --check rejects every file.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary

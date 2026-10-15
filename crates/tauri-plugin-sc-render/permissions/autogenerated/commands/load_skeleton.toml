@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-load-skeleton"
+description = "Enables the load_skeleton command without any pre-configured scope."
+commands.allow = ["load_skeleton"]
+
+[[permission]]
+identifier = "deny-load-skeleton"
+description = "Denies the load_skeleton command without any pre-configured scope."
+commands.deny = ["load_skeleton"]

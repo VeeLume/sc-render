@@ -1,7 +1,7 @@
 //! Print a CryXmlB / XML file from `Data.p4k` (a `.cdf`, `.mtl`, …) as text.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example p4k_xml -- <path>...
+//! cargo run -p sc-render --release --example p4k_xml -- <path>...
 //! ```
 
 use sc_extract::{AssetSource, XmlNode, object_container};

@@ -3,7 +3,7 @@
 //! normals (mean dot product; near 1 for a correct decode).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example uv_range -- <geometry path>...
+//! cargo run -p sc-render --release --example uv_range -- <geometry path>...
 //! ```
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

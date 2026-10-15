@@ -1,0 +1,9 @@
+{
+	"name": "sc-render-workspace",
+	"private": true,
+	"description": "Workspace root — VeeLume/ci runs pnpm from here, so build/check delegate to the lab",
+	"scripts": {
+		"build": "pnpm --filter sc-item-render build",
+		"check": "pnpm --filter sc-item-render check"
+	}
+}

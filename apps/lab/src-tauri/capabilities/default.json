@@ -3,5 +3,5 @@
 	"identifier": "default",
 	"description": "Permissions for the main window, all platforms.",
 	"windows": ["main"],
-	"permissions": ["core:default", "opener:default"]
+	"permissions": ["core:default", "opener:default", "sc-render:default"]
 }

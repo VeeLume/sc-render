@@ -1,7 +1,7 @@
 // Pointer and wheel handling for a rendered cell: left drag turns the item,
 // right / middle drag (or Shift + left drag) pans, the wheel zooms towards the
 // cursor, a double click restores the whole view.
-import type { Cell } from './scene';
+import type { Cell } from './cell';
 
 export type AxisLock = 'free' | 'turn' | 'tilt';
 
@@ -19,11 +19,17 @@ export const VIEW_HINT = 'Drag to turn, right-drag or Shift-drag to pan, wheel t
  */
 export function viewControls(canvas: () => HTMLCanvasElement, cell: () => Cell | null, lock: () => AxisLock) {
 	let drag: { id: number; x: number; y: number; pan: boolean } | null = null;
+	const end = (e: PointerEvent) => {
+		if (drag?.id !== e.pointerId) return;
+		drag = null;
+		canvas().style.cursor = 'grab';
+	};
 	return {
 		onpointerdown(e: PointerEvent) {
 			if (e.button > 2) return;
 			drag = { id: e.pointerId, x: e.clientX, y: e.clientY, pan: e.button !== 0 || e.shiftKey };
 			canvas().setPointerCapture(e.pointerId);
+			canvas().style.cursor = 'grabbing';
 		},
 		onpointermove(e: PointerEvent) {
 			if (!drag || e.pointerId !== drag.id) return;
@@ -38,12 +44,8 @@ export function viewControls(canvas: () => HTMLCanvasElement, cell: () => Cell |
 			const l = lock();
 			cell()?.rotate(l === 'tilt' ? 0 : dx, l === 'turn' ? 0 : dy);
 		},
-		onpointerup(e: PointerEvent) {
-			if (drag?.id === e.pointerId) drag = null;
-		},
-		onpointercancel(e: PointerEvent) {
-			if (drag?.id === e.pointerId) drag = null;
-		},
+		onpointerup: end,
+		onpointercancel: end,
 		oncontextmenu(e: MouseEvent) {
 			e.preventDefault();
 		},

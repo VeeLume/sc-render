@@ -2,7 +2,7 @@
 //! (`.a`) texture exists.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example tex_info -- <texture path>...
+//! cargo run -p sc-render --release --example tex_info -- <texture path>...
 //! ```
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

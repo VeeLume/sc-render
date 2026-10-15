@@ -3,10 +3,10 @@
 //! weights (coverage, highest joint against the bone count, weight sums).
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example skeleton_bones -- <path> [filter]
+//! cargo run -p sc-render --release --example skeleton_bones -- <path> [filter]
 //! ```
 
-use render_assets::Assets;
+use sc_render::Assets;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

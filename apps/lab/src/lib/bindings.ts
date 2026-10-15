@@ -20,39 +20,6 @@ async settingsSave(settings: AppSettings) : Promise<Result<null, string>> {
 }
 },
 /**
- * Load a geometry file; its buffer is then served at `scr://localhost/model`.
- */
-async loadModel(path: string) : Promise<Result<ModelInfo, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("load_model", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * A `.mtl` file (extension optional).
- */
-async loadMaterial(path: string) : Promise<Result<MaterialInfo, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("load_material", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * A `.chr` skeleton's bones.
- */
-async loadSkeleton(path: string) : Promise<Result<BoneInfo[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("load_skeleton", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Save a rendered cell as `<app data>/snapshots/<name>.png`; returns the path.
  */
 async saveSnapshot(name: string, png: number[]) : Promise<Result<string, string>> {
@@ -177,14 +144,6 @@ onboarding_completed: boolean }
  */
 export type Body = "Female" | "Male"
 /**
- * A skeleton bone in the model's space.
- */
-export type BoneInfo = { name: string; parent: number | null; position: [number, number, number]; 
-/**
- * Quaternion `(x, y, z, w)`.
- */
-rotation: [number, number, number, number] }
-/**
  * A saved character file.
  */
 export type CharacterFile = { 
@@ -229,40 +188,17 @@ export type ItemSummary = { guid: string; label: string; record: string;
  * `Type/SubType`.
  */
 kind: string }
-export type LayerInfo = { name: string; path: string; submaterial: string; tint: [number, number, number]; wear_tint: [number, number, number]; gloss_mult: number; wear_gloss: number; uv_tiling: number; palette_tint: number }
 /**
- * A `.mtl` file as the renderer consumes it.
- */
-export type MaterialInfo = { path: string; submaterials: SubMaterialInfo[] }
-export type ModelInfo = { path: string; 
-/**
- * The `.mtl` the geometry names (bare names resolved next to it).
- */
-material: string | null; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number | null; tangents_offset: number | null; uvs_offset: number | null; colors_offset: number | null; 
-/**
- * Skinning: per vertex the four strongest of up to eight influences,
- * indices into the `.skin`'s own bone list.
- */
-joints_offset: number | null; 
-/**
- * The matching weights, renormalised to sum to 255.
- */
-weights_offset: number | null; indices_offset: number; byte_length: number; nodes: NodeInfo[]; submeshes: SubmeshInfo[] }
-export type NodeInfo = { name: string; parent: number | null; 
-/**
- * 3 × 4 row-major, relative to the parent.
- */
-transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
-/**
- * Colour overrides for one item of a character.
+ * Colour overrides for one item of a character (a saved character's hair
+ * dye, eye and skin colour), applied by the materials that read them.
  */
 export type PartLook = { 
 /**
- * The item's record GUID (as in the inventory dump and scene parts).
+ * The item's record GUID (as in [`ScenePart::guid`]).
  */
 item: string; 
 /**
- * The `.chf` material the values come from (`HairDyeMaterial`).
+ * The material the values come from (`HairDyeMaterial`).
  */
 material: string; 
 /**
@@ -299,7 +235,7 @@ export type SceneItem = { id: string; label: string; root: ScenePart;
  */
 offset: [number, number, number]; 
 /**
- * Extra viewing elevation, degrees (the fallback pose only).
+ * Extra viewing elevation, degrees (fallback poses only).
  */
 elevation: number; rig: SceneLight[]; 
 /**
@@ -326,7 +262,11 @@ export type ScenePaletteEntry = { tint: [number, number, number]; spec: [number,
 /**
  * One item's geometry and what hangs on it.
  */
-export type ScenePart = { record: string; 
+export type ScenePart = { 
+/**
+ * The name the log shows.
+ */
+record: string; 
 /**
  * The item's record GUID; empty for a `.cdf` part that is no item.
  */
@@ -345,9 +285,6 @@ export type ScenePiece = { geometry: string;
  * `None`: the geometry's own `MtlName`.
  */
 material: string | null }
-export type SubMaterialInfo = { name: string; shader: string; features: string[]; diffuse: [number, number, number]; specular: [number, number, number]; emissive: [number, number, number]; opacity: number; shininess: number; alpha_test: number; textures: TextureSlot[]; layers: LayerInfo[]; params: ([string, string])[] }
-export type SubmeshInfo = { material: number; node: number | null; first_index: number; index_count: number }
-export type TextureSlot = { slot: string; file: string; tiling: [number, number] }
 
 /** tauri-specta globals **/
 

@@ -2,12 +2,12 @@
 //! submaterial names from the given `.mtl`.
 //!
 //! ```bash
-//! cargo run -p render-assets --release --example material_area -- <mtl> <geometry>...
+//! cargo run -p sc-render --release --example material_area -- <mtl> <geometry>...
 //! ```
 
 use std::collections::BTreeMap;
 
-use render_assets::Assets;
+use sc_render::Assets;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
