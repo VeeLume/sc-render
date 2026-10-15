@@ -127,13 +127,23 @@ export class Cell {
 	 * Draw `fx`. With `keepView`, the previous item's fit and rotation stay
 	 * (the same character with parts hidden or shown does not jump).
 	 */
-	async show(fx: SceneItem, opts: CellOptions, keepView = false, looks: Looks = new Map()): Promise<string[]> {
+	async show(
+		fx: SceneItem,
+		opts: CellOptions,
+		keepView = false,
+		looks: Looks = new Map(),
+		/** The standing pose; by default for characters (a bare `.chr` root, no geometry of its own). */
+		pose?: boolean
+	): Promise<string[]> {
 		const log: string[] = [];
 		const generation = ++this.generation;
 
 		this.aspect = fx.aspect;
 		for (const n of fx.notes) log.push(`note: ${n}`);
-		const model = await buildItem(fx.root, log, 0, new CharacterBones(fx.root), looks);
+		const rig = new CharacterRig(fx.root);
+		const character = !!fx.root.skeleton?.toLowerCase().endsWith('.chr') && fx.root.pieces.length === 0;
+		await rig.init(pose ?? character);
+		const model = await buildItem(fx.root, log, 0, rig, looks);
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -379,25 +389,40 @@ function visibleBounds(root: THREE.Object3D): THREE.Box3 {
 		const pos = mesh.geometry.getAttribute('position');
 		const idx = mesh.geometry.getIndex();
 		if (!idx) return;
+		const skinned = (mesh as THREE.SkinnedMesh).isSkinnedMesh ? (mesh as THREE.SkinnedMesh) : null;
 		for (let i = 0; i < idx.count; i++) {
-			box.expandByPoint(v.fromBufferAttribute(pos, idx.getX(i)).applyMatrix4(mesh.matrixWorld));
+			// A skinned vertex counts where the pose put it.
+			if (skinned) skinned.getVertexPosition(idx.getX(i), v);
+			else v.fromBufferAttribute(pos, idx.getX(i));
+			box.expandByPoint(v.applyMatrix4(mesh.matrixWorld));
 		}
 	});
 	return box;
 }
 
+const IDENTITY_SCALE = new THREE.Vector3(1, 1, 1);
+const boneMatrix = (b: BoneInfo) =>
+	new THREE.Matrix4().compose(new THREE.Vector3(...b.position), new THREE.Quaternion(...b.rotation), IDENTITY_SCALE);
+
 /**
- * Bones that worn skins add to a character's skeleton. A skin may carry
- * joints the base `.chr` lacks, which the engine merges in: the Novikov
- * undersuit's skin brings `magazine_attach_1_override` and friends that its
- * armor core's ports name. Searched only when a part's own skeleton lacks a
- * bone; skins load on first need.
+ * A character's skeleton: the actor's `.chr` plus the bones worn skins add
+ * (a skin may carry joints the base lacks, which the engine merges in: the
+ * Novikov undersuit's skin brings `magazine_attach_1_override` and friends
+ * that its armor core's ports name). Each bone has its bind matrix and, when
+ * posing, a posed one (model space); an added bone follows its parent.
+ * Skins load on first need.
  */
-class CharacterBones {
+class CharacterRig {
 	private readonly skins: string[] = [];
 	private readonly loaded = new Map<string, Promise<BoneInfo[]>>();
+	/** Base skeleton by lower-case name: bind matrix and parent name. */
+	private readonly base = new Map<string, { bind: THREE.Matrix4; parent: string | null }>();
+	private readonly posedBase = new Map<string, THREE.Matrix4>();
+	private readonly posedExtra = new Map<string, Promise<THREE.Matrix4 | null>>();
+	/** Skinned meshes bind to the posed skeleton (character renders only). */
+	posing = false;
 
-	constructor(root: ScenePart) {
+	constructor(private readonly root: ScenePart) {
 		const walk = (p: ScenePart) => {
 			for (const piece of p.pieces) if (piece.geometry.toLowerCase().endsWith('.skin')) this.skins.push(piece.geometry);
 			for (const a of p.attachments) walk(a.part);
@@ -405,17 +430,120 @@ class CharacterBones {
 		walk(root);
 	}
 
+	/** Load the base skeleton and pose it (`pose`: the natural standing pose). */
+	async init(pose: boolean) {
+		const chr = this.root.skeleton;
+		if (!pose || !chr?.toLowerCase().endsWith('.chr')) return;
+		const res = await commands.loadSkeleton(chr);
+		if (res.status !== 'ok') return;
+		const bones = res.data;
+		for (const b of bones) {
+			const parent = b.parent != null ? bones[b.parent]?.name.toLowerCase() ?? null : null;
+			this.base.set(b.name.toLowerCase(), { bind: boneMatrix(b), parent });
+			this.posedBase.set(b.name.toLowerCase(), boneMatrix(b));
+		}
+		standingPose(this.base, this.posedBase);
+		this.posing = true;
+	}
+
+	skinBones(skin: string): Promise<BoneInfo[]> {
+		let bones = this.loaded.get(skin);
+		if (!bones) {
+			bones = commands.loadSkeleton(skin).then((r) => (r.status === 'ok' ? r.data : []));
+			this.loaded.set(skin, bones);
+		}
+		return bones;
+	}
+
+	/** A bone the base lacks, from the first worn skin that has it. */
 	async find(name: string): Promise<BoneInfo | undefined> {
 		for (const skin of this.skins) {
-			let bones = this.loaded.get(skin);
-			if (!bones) {
-				bones = commands.loadSkeleton(skin).then((r) => (r.status === 'ok' ? r.data : []));
-				this.loaded.set(skin, bones);
-			}
-			const hit = (await bones).find((b) => b.name.toLowerCase() === name);
+			const hit = (await this.skinBones(skin)).find((b) => b.name.toLowerCase() === name);
 			if (hit) return hit;
 		}
 		return undefined;
+	}
+
+	/** The posed model-space matrix of a bone (base or added); `null` if unknown. */
+	posed(name: string): Promise<THREE.Matrix4 | null> {
+		return this.posedChain(name.toLowerCase(), new Set());
+	}
+
+	/** `seen`: the added bones on the way here; skins that disagree about a
+	 * bone's parent must not make the walk (or its promises) go round. */
+	private posedChain(key: string, seen: Set<string>): Promise<THREE.Matrix4 | null> {
+		const base = this.posedBase.get(key);
+		if (base) return Promise.resolve(base);
+		const cached = this.posedExtra.get(key);
+		if (cached) return cached;
+		const hit = this.posedAdded(key, new Set([...seen, key]));
+		this.posedExtra.set(key, hit);
+		return hit;
+	}
+
+	private async posedAdded(key: string, seen: Set<string>): Promise<THREE.Matrix4 | null> {
+		for (const skin of this.skins) {
+			const bones = await this.skinBones(skin);
+			const b = bones.find((x) => x.name.toLowerCase() === key);
+			if (!b) continue;
+			const parent = b.parent != null ? bones[b.parent] : undefined;
+			const parentKey = parent?.name.toLowerCase();
+			if (!parent || !parentKey || seen.has(parentKey)) return boneMatrix(b);
+			const parentPosed = this.posedBase.get(parentKey) ?? (await this.posedChain(parentKey, seen));
+			if (!parentPosed) return boneMatrix(b);
+			// Keep its bind offset from the parent.
+			const local = boneMatrix(parent).invert().multiply(boneMatrix(b));
+			return parentPosed.clone().multiply(local);
+		}
+		return null;
+	}
+}
+
+/**
+ * A relaxed standing pose from the A-pose bind: the upper arms turn to hang
+ * down a little away from the body, the elbows bend slightly forward. Rotations
+ * are in model space about each joint and carry the bone's whole subtree.
+ */
+function standingPose(
+	base: Map<string, { bind: THREE.Matrix4; parent: string | null }>,
+	posed: Map<string, THREE.Matrix4>
+) {
+	const children = new Map<string, string[]>();
+	for (const [name, b] of base) if (b.parent) children.set(b.parent, [...(children.get(b.parent) ?? []), name]);
+	const position = (name: string) => new THREE.Vector3().setFromMatrixPosition(posed.get(name)!);
+	const rotateSubtree = (name: string, q: THREE.Quaternion) => {
+		if (!posed.has(name)) return;
+		const pivot = position(name);
+		const m = new THREE.Matrix4()
+			.makeTranslation(pivot.x, pivot.y, pivot.z)
+			.multiply(new THREE.Matrix4().makeRotationFromQuaternion(q))
+			.multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+		const stack = [name];
+		while (stack.length) {
+			const n = stack.pop()!;
+			posed.get(n)!.premultiply(m);
+			stack.push(...(children.get(n) ?? []));
+		}
+	};
+	// Front is where the face is: +Y in the SC skeletons, checked by the head.
+	const head = posed.get('head');
+	const nose = [...posed.keys()].find((k) => k.includes('nose'));
+	const front =
+		head && nose ? Math.sign(new THREE.Vector3().setFromMatrixPosition(posed.get(nose)!).y - position('head').y) || 1 : 1;
+	for (const side of ['left', 'right'] as const) {
+		const arm = `${side}arm`;
+		const fore = `${side}forearm`;
+		const hand = `${side}hand`;
+		if (!posed.has(arm) || !posed.has(fore)) continue;
+		const out = side === 'left' ? -1 : 1;
+		const along = position(fore).sub(position(arm)).normalize();
+		const hang = new THREE.Vector3(out * 0.2, front * 0.06, -1).normalize();
+		rotateSubtree(arm, new THREE.Quaternion().setFromUnitVectors(along, hang));
+		if (posed.has(hand)) {
+			// Bend the elbow forward about the shoulder-to-shoulder axis.
+			const bend = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), front * 0.26);
+			rotateSubtree(fore, bend);
+		}
 	}
 }
 
@@ -429,7 +557,7 @@ async function buildItem(
 	item: ScenePart,
 	log: string[],
 	depth: number,
-	character: CharacterBones,
+	character: CharacterRig,
 	looks: Looks
 ): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
@@ -444,7 +572,12 @@ async function buildItem(
 		log.push(`${pad}  ${piece.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
 		log.push(`${pad}    material ${mtlPath ?? '—'}: ${mtl?.submaterials.length ?? 0} submaterials`);
 		const look = looks.get(item.guid);
-		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look));
+		// A weighted skin on a posing character binds to the posed skeleton.
+		const skin =
+			character.posing && info.joints_offset != null && piece.geometry.toLowerCase().endsWith('.skin')
+				? { bones: await character.skinBones(piece.geometry), rig: character }
+				: undefined;
+		group.add(await buildModel(info, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin));
 	}
 	if (!item.attachments.length) return group;
 	let bones: BoneInfo[] = [];
@@ -459,9 +592,16 @@ async function buildItem(
 		// Only a part on a character skeleton can use a worn skin's bones.
 		if (name && !bone && item.skeleton) bone = await character.find(name);
 		let anchor: THREE.Object3D | undefined;
+		const posed = name && character.posing && item.skeleton ? await character.posed(name) : null;
 		if (!name) {
 			// Skinned to this part's skeleton: bind pose, at its origin.
 			anchor = group;
+		} else if (posed) {
+			// On a posing character the bone is where the pose put it.
+			anchor = new THREE.Object3D();
+			anchor.matrix.copy(posed);
+			anchor.matrixAutoUpdate = false;
+			group.add(anchor);
 		} else if (bone) {
 			anchor = new THREE.Object3D();
 			anchor.position.set(...bone.position);
@@ -476,7 +616,7 @@ async function buildItem(
 			log.push(`${pad}  ${at.part.record}: no bone or node ${at.bone}`);
 			continue;
 		}
-		const on = name ? `${at.bone} (${bone ? 'bone' : 'node'})` : 'its skeleton (skinned)';
+		const on = name ? `${at.bone} (${bone || posed ? 'bone' : 'node'})` : 'its skeleton (skinned)';
 		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
 		const child = await buildItem(at.part, log, depth + 1, character, looks);
 		// The port's offset, then the child moved so its own helper (not its
@@ -522,7 +662,20 @@ async function helperMatrix(part: ScenePart, group: THREE.Object3D, name: string
 	return new THREE.Matrix4().copy(group.matrixWorld).invert().multiply(node.matrixWorld);
 }
 
-async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[], palette?: Palette, look?: PartLook) {
+/** A skin's own bone list and the character rig its bones join (by name). */
+interface SkinBinding {
+	bones: BoneInfo[];
+	rig: CharacterRig;
+}
+
+async function buildModel(
+	info: ModelInfo,
+	subs: SubMaterialInfo[],
+	log: string[],
+	palette?: Palette,
+	look?: PartLook,
+	skin?: SkinBinding
+) {
 	const buf = await fetchModelBuffer(info.path);
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
@@ -536,6 +689,27 @@ async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[
 	if (info.colors_offset != null)
 		geomAttrs.scColor = new THREE.BufferAttribute(new Uint8Array(buf, info.colors_offset, n * 4), 4, true);
 	const indices = new Uint32Array(buf, info.indices_offset, info.index_count);
+	let skeleton: THREE.Skeleton | null = null;
+	if (skin && info.joints_offset != null && info.weights_offset != null) {
+		geomAttrs.skinIndex = new THREE.BufferAttribute(new Uint16Array(buf, info.joints_offset, n * 4), 4);
+		geomAttrs.skinWeight = new THREE.BufferAttribute(new Uint8Array(buf, info.weights_offset, n * 4), 4, true);
+		// The skin's bones, placed where the rig poses them; inverse binds
+		// from the skin's own bind pose. Bones outside the scene graph keep
+		// the matrixWorld set here.
+		const bones = await Promise.all(
+			skin.bones.map(async (b) => {
+				const bone = new THREE.Bone();
+				bone.name = b.name;
+				bone.matrixAutoUpdate = false;
+				bone.matrixWorld.copy((await skin.rig.posed(b.name)) ?? boneMatrix(b));
+				return bone;
+			})
+		);
+		skeleton = new THREE.Skeleton(
+			bones,
+			skin.bones.map((b) => boneMatrix(b).invert())
+		);
+	}
 
 	// Node tree; transforms are parent-relative 3×4 row-major.
 	const nodes = info.nodes.map((nd) => {
@@ -567,7 +741,17 @@ async function buildModel(info: ModelInfo, subs: SubMaterialInfo[], log: string[
 		const g = new THREE.BufferGeometry();
 		for (const [k, a] of Object.entries(geomAttrs)) g.setAttribute(k, a);
 		g.setIndex(new THREE.BufferAttribute(indices.subarray(sm.first_index, sm.first_index + sm.index_count), 1));
-		const mesh = new THREE.Mesh(g, material);
+		let mesh: THREE.Mesh;
+		if (skeleton) {
+			const skinned = new THREE.SkinnedMesh(g, material);
+			// Model-space bones: no bind transform of the mesh's own.
+			skinned.bindMode = THREE.DetachedBindMode;
+			skinned.bind(skeleton, new THREE.Matrix4());
+			skinned.frustumCulled = false;
+			mesh = skinned;
+		} else {
+			mesh = new THREE.Mesh(g, material);
+		}
 		mesh.name = sub?.name ?? `sub${sm.material}`;
 		(sm.node != null && nodes[sm.node] ? nodes[sm.node] : root).add(mesh);
 	}

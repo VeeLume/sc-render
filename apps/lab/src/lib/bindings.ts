@@ -231,7 +231,16 @@ export type ModelInfo = { path: string;
 /**
  * The `.mtl` the geometry names (bare names resolved next to it).
  */
-material: string | null; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number | null; tangents_offset: number | null; uvs_offset: number | null; colors_offset: number | null; indices_offset: number; byte_length: number; nodes: NodeInfo[]; submeshes: SubmeshInfo[] }
+material: string | null; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number | null; tangents_offset: number | null; uvs_offset: number | null; colors_offset: number | null; 
+/**
+ * Skinning: per vertex the four strongest of up to eight influences,
+ * indices into the `.skin`'s own bone list.
+ */
+joints_offset: number | null; 
+/**
+ * The matching weights, renormalised to sum to 255.
+ */
+weights_offset: number | null; indices_offset: number; byte_length: number; nodes: NodeInfo[]; submeshes: SubmeshInfo[] }
 export type NodeInfo = { name: string; parent: number | null; 
 /**
  * 3 × 4 row-major, relative to the parent.

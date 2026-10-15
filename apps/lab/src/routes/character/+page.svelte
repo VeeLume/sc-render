@@ -21,6 +21,8 @@
 	let cell: Cell | null = null;
 	let character = $state<InventoryNode | null>(null);
 	let body = $state<Body>('Female');
+	/** Natural standing pose, or the skeleton's bind (A-) pose. */
+	let natural = $state(true);
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 	let log = $state<string[]>([]);
@@ -69,7 +71,7 @@
 			if (res.status !== 'ok') throw new Error(res.error);
 			if (mine !== request) return;
 			// Frame the figure in this view, not in an inventory cell.
-			log = await cell.show({ ...res.data, aspect: VIEW_ASPECT }, LIGHTS, rendered, looks);
+			log = await cell.show({ ...res.data, aspect: VIEW_ASPECT }, LIGHTS, rendered, looks, natural);
 			rendered = true;
 		} catch (e) {
 			error = String(e);
@@ -237,6 +239,21 @@
 					{/each}
 				</select>
 			</label>
+			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Pose">
+				{#each [{ v: true, l: 'Natural' }, { v: false, l: 'Bind' }] as p (p.l)}
+					<button
+						role="radio"
+						aria-checked={natural === p.v}
+						title={p.v ? 'Standing, arms down' : 'The skeleton bind (A-) pose'}
+						class="px-2 py-0.5 {natural === p.v ? 'bg-muted text-foreground' : 'hover:bg-muted/50'}"
+						onclick={() => {
+							natural = p.v;
+							rendered = false;
+							scheduleRender();
+						}}>{p.l}</button
+					>
+				{/each}
+			</div>
 			<div class="flex overflow-hidden rounded border" role="radiogroup" aria-label="Body">
 				{#each ['Female', 'Male'] as const as b (b)}
 					<button
