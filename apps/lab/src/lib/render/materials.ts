@@ -11,6 +11,19 @@
 //                  Shininess / 255 = gloss, TexSlot2 normal. Drawn as a
 //                  transparent layer whose opacity grows as the tint darkens;
 //                  it casts no shadow. Thin film, dirt and glare not modelled.
+//   HairPBR        Hair, brows, lashes, scalp caps (rules from the game's
+//                  hair G-buffer shader): TexSlot1 opacity, alpha-tested.
+//                  Colour from melanin: m = BaseMelanin + noise^2 x
+//                  BaseMelaninVariation, M = -ln(1 - m^2), absorption
+//                  M(1-r)(0.5028, 0.8364, 1.644) + M r (0.3391, 0.9464, 3.4825)
+//                  (r = BaseMelaninRedness), colour = exp(-5.8884 sqrt(abs.))
+//                  x BaseTintColor. Dye: DyeColor (x the dye map, absent here)
+//                  with pigment variation, coverage DyeAmount broken up by
+//                  noise, fading in along the strand (vertex colour R) past
+//                  DyeShift over DyeFadeout. Roughness 0.15 + 0.85 (1 -
+//                  Smoothness). Opacity (red) grows by mip x 0.125 x
+//                  OpacityMipScale. The engine's noise texture is a procedural
+//                  stand-in; the anisotropic hair lighting is not modelled.
 //   Organic        Rocks and crystals: TexSlot10 albedo (else TexSlot3 diffuse),
 //                  TexSlot2 ddna; TransmittanceColor glows through when
 //                  TRANSMITTANCE_LIGHTING is on (a stand-in for the game's
@@ -140,6 +153,7 @@ export async function buildMaterial(s: SubMaterialInfo, palette?: Palette): Prom
 	if (s.shader.startsWith('LayerBlend')) return layerBlend(s, palette);
 	if (s.shader === 'GlassPBR') return glass(s);
 	if (s.shader === 'Organic') return organic(s);
+	if (s.shader === 'HairPBR') return hair(s);
 	return illum(s);
 }
 
@@ -222,6 +236,109 @@ async function glass(s: SubMaterialInfo): Promise<THREE.Material> {
 		);
 	};
 	m.userData.noShadow = true;
+	return m;
+}
+
+async function hair(s: SubMaterialInfo): Promise<THREE.Material> {
+	const num = (k: string, fallback: number) => {
+		const v = Number(s.params.find(([key]) => key === k)?.[1]);
+		return Number.isFinite(v) ? v : fallback;
+	};
+	const rgb = (k: string, fallback: [number, number, number]) => {
+		const v = (s.params.find(([key]) => key === k)?.[1] ?? '').split(',').map(Number);
+		return v.length === 3 && v.every(Number.isFinite) ? color(v as [number, number, number]) : color(fallback);
+	};
+	// A cap without melanin params (a scalp under the hair) keeps its Diffuse.
+	const hasMelanin = s.params.some(([k]) => k === 'BaseMelanin');
+	const m = new THREE.MeshPhysicalMaterial({
+		color: 0xffffff,
+		metalness: 0,
+		roughness: 1,
+		side: THREE.DoubleSide,
+		// The game dithers the test and accumulates frames, which reads
+		// fuller than a hard 0.5 cut.
+		alphaTest: 0.3,
+		alphaToCoverage: true
+	});
+	const opacity = slot(s, 'TexSlot1');
+	if (opacity) m.alphaMap = await fetchTexture(opacity.file, 'mask');
+	m.userData.noShadow = true;
+	const uniforms = {
+		uMelanin: { value: num('BaseMelanin', 0.5) },
+		uRedness: { value: num('BaseMelaninRedness', 0) },
+		uMelaninVar: { value: num('BaseMelaninVariation', 0) },
+		uTint: { value: rgb('BaseTintColor', [1, 1, 1]) },
+		uDyeColor: { value: rgb('DyeColor', [1, 1, 1]) },
+		uDyeAmount: { value: num('DyeAmount', 0) },
+		uDyeFadeout: { value: num('DyeFadeout', 0) },
+		uDyeShift: { value: num('DyeShift', 0) },
+		uDyeVar: { value: num('DyePigmentVariation', 0) },
+		uSmooth: { value: num('Smoothness', 0.5) },
+		uDiffuse: { value: color(s.diffuse) },
+		uMelaninColor: { value: hasMelanin ? 1 : 0 },
+		uOpacityMipScale: { value: num('OpacityMipScale', 1) }
+	};
+	m.userData.hairUniforms = uniforms;
+	m.onBeforeCompile = (shader) => {
+		Object.assign(shader.uniforms, uniforms);
+		shader.vertexShader = shader.vertexShader
+			.replace('#include <common>', '#include <common>\nattribute vec4 scColor;\nvarying float vStrand;\nvarying vec2 vHairUv;')
+			.replace('#include <uv_vertex>', '#include <uv_vertex>\nvStrand = scColor.r;\nvHairUv = uv;');
+		shader.fragmentShader = shader.fragmentShader
+			.replace(
+				'#include <common>',
+				`#include <common>
+uniform float uMelanin, uRedness, uMelaninVar, uDyeAmount, uDyeFadeout, uDyeShift, uDyeVar, uSmooth, uMelaninColor, uOpacityMipScale;
+uniform vec3 uTint, uDyeColor, uDiffuse;
+varying float vStrand;
+varying vec2 vHairUv;
+float hairHash( float i ) { return fract( sin( i * 12.9898 ) * 43758.5453 ); }
+float hairNoise( float x ) {
+	float i = floor( x );
+	return mix( hairHash( i ), hairHash( i + 1.0 ), smoothstep( 0.0, 1.0, fract( x ) ) );
+}
+float hairVar;`
+			)
+			.replace(
+				'#include <color_fragment>',
+				`#include <color_fragment>
+hairVar = clamp( hairNoise( vHairUv.x * 50.0 ) * 1.8 - 0.4, 0.0, 1.0 );
+vec3 hairCol = uDiffuse;
+if ( uMelaninColor > 0.5 ) {
+	float mel = clamp( uMelanin + hairVar * hairVar * uMelaninVar, 0.0, 1.0 );
+	float M = -log( max( 1.0 - mel * mel, 1e-4 ) );
+	vec3 absorb = vec3( 0.5028, 0.8364, 1.644 ) * ( M * ( 1.0 - uRedness ) ) + vec3( 0.339056, 0.946381, 3.482497 ) * ( M * uRedness );
+	hairCol = exp( -sqrt( absorb ) * 5.8884144 ) * uTint;
+	if ( uDyeAmount > 0.0 ) {
+		vec3 dye = clamp( sqrt( uDyeColor ) + ( 0.5 - hairVar ) * 0.75 * uDyeVar, 0.0, 1.0 );
+		float a = uDyeAmount;
+		float speck = clamp( hairNoise( vHairUv.y * 120.0 + vHairUv.x * 37.0 ) * 1.8 - 0.4, 0.0, 1.0 );
+		float cover = mix( sqrt( clamp( ( a - speck ) * 2.0, 0.0, 1.0 ) ), 1.0, a * a );
+		float along = smoothstep( 0.0, max( uDyeFadeout, 0.001 ), clamp( max( vStrand, 0.001 ) - uDyeShift, 0.0, 1.0 ) );
+		hairCol = mix( hairCol, mix( hairCol, dye * dye, cover ), along );
+	}
+	hairCol = clamp( hairCol * uDiffuse, 1e-4, 0.99 );
+}
+diffuseColor.rgb = hairCol;`
+			)
+			.replace(
+				'#include <alphamap_fragment>',
+				// Opacity is the map's red channel (BC5), thickened in smaller
+				// mips so strands stay solid at a distance.
+				`vec2 opacPx = vAlphaMapUv * vec2( textureSize( alphaMap, 0 ) );
+vec2 opacDx = dFdx( opacPx );
+vec2 opacDy = dFdy( opacPx );
+float opacLod = max( 0.0, 0.5 * log2( max( dot( opacDx, opacDx ), dot( opacDy, opacDy ) ) ) );
+diffuseColor.a *= texture2D( alphaMap, vAlphaMapUv ).r * ( 1.0 + opacLod * 0.125 * uOpacityMipScale );`
+			)
+			.replace(
+				'#include <roughnessmap_fragment>',
+				`float hairRough = 0.15 + ( 1.0 - uSmooth ) * 0.85;
+float roughnessFactor = mix( hairRough, max( hairRough + 0.05, 0.15 ), smoothstep( 0.7, 0.8, hairVar ) );`
+			)
+			.replace(IBL_LINE, SPECULAR_ONLY_IBL);
+	};
+	m.customProgramCacheKey = () => 'hair';
 	return m;
 }
 

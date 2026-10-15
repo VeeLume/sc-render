@@ -43,6 +43,8 @@
 		// The player's own character: the actor's skeleton, body, head, hair
 		// and everything worn.
 		'inventory:Player',
+		// The head alone (hair, brows, lashes, eyes) for checking the face.
+		'inventory:PU_Protos_Head',
 		// Both records are named "Invictus Flight Jacket"; the dark brown
 		// leather one seen in game is _04.
 		'dmc_jacket_13_01_01',
@@ -178,6 +180,8 @@
 
 	async function devRun() {
 		for (const entry of DEV_SET) {
+			// Leaving the page (cell disposed) ends the run.
+			if (!cell) return;
 			if (entry.startsWith('inventory:')) {
 				if (!inventory) await loadInventory();
 				const label = entry.slice('inventory:'.length).toLowerCase();

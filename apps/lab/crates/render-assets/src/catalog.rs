@@ -61,18 +61,22 @@ impl Body {
 /// onto a body, directly or through a parent) and so needs the body-fitted
 /// geometry rather than the stored prop.
 #[derive(Debug, Clone, Copy)]
-struct Fit {
+struct Fit<'a> {
     body: Body,
     worn: bool,
+    /// The parent port's `Flags`, which also name variants (`Protos_Head`
+    /// selects a player head's eyes and teeth).
+    port_flags: &'a str,
 }
 
-impl Fit {
-    fn tags(self) -> &'static [&'static str] {
-        if self.worn {
+impl<'a> Fit<'a> {
+    fn tags(self) -> Vec<&'a str> {
+        let base = if self.worn {
             self.body.worn_tags()
         } else {
             self.body.tags()
-        }
+        };
+        base.iter().copied().chain([self.port_flags]).collect()
     }
 }
 
@@ -348,7 +352,11 @@ impl Catalog {
             .get(&guid)
             .ok_or_else(|| Error::Catalog(format!("{guid} has no geometry")))?;
         let mut notes = Vec::new();
-        let fit = Fit { body, worn: false };
+        let fit = Fit {
+            body,
+            worn: false,
+            port_flags: "",
+        };
         let mut root = self.part(assets, &guid, children, fit, 0, &mut notes)?;
         share_skeleton(&mut root, None);
         let (offset, elevation) = match self.view.orientation(item, visual) {
@@ -407,7 +415,7 @@ impl Catalog {
             .get(guid)
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry")))?;
         let look = visual
-            .look(fit.tags())
+            .look(&fit.tags())
             .ok_or_else(|| Error::Catalog(format!("{record}: no geometry path")))?;
         let palette = look
             .palette
@@ -523,6 +531,7 @@ impl Catalog {
                 c.children.as_deref(),
                 Fit {
                     worn: fit.worn || port.skinned,
+                    port_flags: &port.flags,
                     ..fit
                 },
                 depth + 1,
