@@ -555,6 +555,23 @@ impl Catalog {
         Ok(out)
     }
 
+    /// The player's character from a Starlume `inventory.json` dump: the
+    /// item at the top of the stash whose context is the player (the actor,
+    /// with the body and everything worn attached). `None` when the dump has
+    /// no such stash.
+    pub fn character(&self, json: &str) -> Result<Option<InventoryNode>> {
+        let v: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| Error::Catalog(e.to_string()))?;
+        Ok(v["stashes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|s| s["location"]["context"]["kind"] == "Player")
+            .flat_map(|s| s["items"].as_array().into_iter().flatten())
+            .next()
+            .map(|item| self.inventory_node(item, None)))
+    }
+
     fn inventory_node(&self, v: &serde_json::Value, parent: Option<&Visual>) -> InventoryNode {
         let guid = v["class_crc"]
             .as_u64()

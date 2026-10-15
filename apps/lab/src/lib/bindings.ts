@@ -108,6 +108,18 @@ async loadInventory(path: string | null) : Promise<Result<InventoryNode[], strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * The player's character (actor, body, everything worn) from the same
+ * dump; `None` when it has no player stash.
+ */
+async loadCharacter(path: string | null) : Promise<Result<InventoryNode | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_character", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

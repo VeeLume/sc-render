@@ -87,17 +87,35 @@ pub async fn load_inventory(
     path: Option<String>,
 ) -> Result<Vec<InventoryNode>, String> {
     blocking(move || {
-        let path = match path {
-            Some(p) => p.into(),
-            None => app
-                .path()
-                .data_dir()
-                .map_err(|e| e.to_string())?
-                .join("starlume-dev/dossier/inventory.json"),
-        };
-        let json =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let json = read_dump(&app, path)?;
         wait(&app)?.inventory(&json).map_err(|e| e.to_string())
     })
     .await
+}
+
+/// The player's character (actor, body, everything worn) from the same
+/// dump; `None` when it has no player stash.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_character(
+    app: AppHandle,
+    path: Option<String>,
+) -> Result<Option<InventoryNode>, String> {
+    blocking(move || {
+        let json = read_dump(&app, path)?;
+        wait(&app)?.character(&json).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+fn read_dump(app: &AppHandle, path: Option<String>) -> Result<String, String> {
+    let path = match path {
+        Some(p) => p.into(),
+        None => app
+            .path()
+            .data_dir()
+            .map_err(|e| e.to_string())?
+            .join("starlume-dev/dossier/inventory.json"),
+    };
+    std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
 }

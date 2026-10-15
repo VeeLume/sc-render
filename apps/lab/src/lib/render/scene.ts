@@ -75,6 +75,8 @@ export class Cell {
 	private item: THREE.Object3D | null = null;
 	/** Turntable around the item's bounds centre; identity is the game's pose. */
 	private turn: THREE.Group | null = null;
+	/** The last show's fit (scale and bounds centre), for `keepView`. */
+	private frame: { scale: number; centre: THREE.Vector3 } | null = null;
 	/** Bumped per `show`; a render that finishes after a newer one started is dropped. */
 	private generation = 0;
 	private lights: THREE.Object3D[] = [];
@@ -119,7 +121,11 @@ export class Cell {
 		this.camera.updateProjectionMatrix();
 	}
 
-	async show(fx: SceneItem, opts: CellOptions): Promise<string[]> {
+	/**
+	 * Draw `fx`. With `keepView`, the previous item's fit and rotation stay
+	 * (the same character with parts hidden or shown does not jump).
+	 */
+	async show(fx: SceneItem, opts: CellOptions, keepView = false): Promise<string[]> {
 		const log: string[] = [];
 		const generation = ++this.generation;
 
@@ -143,7 +149,13 @@ export class Cell {
 		const size = box.getSize(new THREE.Vector3());
 		const centre = box.getCenter(new THREE.Vector3());
 		// ItemModel sizing: a share of the cell's width, height and depth (depth = height).
-		const s = FIT * Math.min(this.aspect / size.x, 1 / size.y, 1 / size.z);
+		let s = FIT * Math.min(this.aspect / size.x, 1 / size.y, 1 / size.z);
+		if (keepView && this.frame) {
+			s = this.frame.scale;
+			centre.copy(this.frame.centre);
+		} else {
+			this.frame = { scale: s, centre: centre.clone() };
+		}
 		rot.rotation.set(0, 0, 0);
 		pivot.updateMatrixWorld(true);
 		const local = visibleBounds(pivot).getSize(new THREE.Vector3());
@@ -167,6 +179,14 @@ export class Cell {
 		// The pivot puts the bounds centre at the origin, so the turntable
 		// turns the item in place.
 		const turn = new THREE.Group();
+		if (keepView && this.turn) turn.quaternion.copy(this.turn.quaternion);
+		if (!keepView) {
+			this.zoom = 1;
+			this.pan.set(0, 0);
+			this.camera.zoom = 1;
+			this.camera.updateProjectionMatrix();
+			this.camera.position.set(0, 0, -0.5 / Math.tan((FOV / 2) * DEG));
+		}
 		turn.add(pivot);
 		this.turn = turn;
 		this.item = turn;
@@ -240,6 +260,66 @@ export class Cell {
 		if (!this.turn) return;
 		this.turn.quaternion.identity();
 		this.render();
+	}
+
+	/** Magnification (1 = the item fits the cell) and the view centre's offset
+	 * in the item plane, in cell units (the cell is 1 high). */
+	private zoom = 1;
+	private pan = new THREE.Vector2();
+
+	/**
+	 * Zoom by `factor` keeping the point under the canvas pixel (`x`, `y`)
+	 * where it is, so the wheel zooms towards the cursor.
+	 */
+	zoomAt(factor: number, x: number, y: number) {
+		const next = THREE.MathUtils.clamp(this.zoom * factor, 1, 16);
+		const at = this.planeOffset(x, y);
+		// The plane point under the cursor before and after must agree.
+		this.pan.addScaledVector(at, 1 / this.zoom - 1 / next);
+		this.zoom = next;
+		if (next === 1) this.pan.set(0, 0);
+		this.applyView();
+	}
+
+	/** Move the view by a pointer drag of `dx`, `dy` pixels (the item follows). */
+	panBy(dx: number, dy: number) {
+		const perPixel = 1 / (this.canvas.clientHeight * this.zoom);
+		this.pan.x -= dx * perPixel;
+		this.pan.y += dy * perPixel;
+		this.applyView();
+	}
+
+	/** Back to the whole item: rotation, zoom and pan. */
+	resetView() {
+		this.zoom = 1;
+		this.pan.set(0, 0);
+		this.applyView();
+		this.resetRotation();
+	}
+
+	/** A canvas pixel's offset from the centre, in cell units at zoom 1. */
+	private planeOffset(x: number, y: number): THREE.Vector2 {
+		const h = this.canvas.clientHeight;
+		return new THREE.Vector2((x - this.canvas.clientWidth / 2) / h, -(y - h / 2) / h);
+	}
+
+	private applyView() {
+		this.camera.zoom = this.zoom;
+		this.camera.updateProjectionMatrix();
+		const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
+		const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+		this.camera.position
+			.set(0, 0, -0.5 / Math.tan((FOV / 2) * DEG))
+			.addScaledVector(right, this.pan.x)
+			.addScaledVector(up, this.pan.y);
+		this.camera.updateMatrixWorld();
+		this.render();
+	}
+
+	/** Free the WebGL context (a page leaving must call this; contexts are few). */
+	dispose() {
+		this.renderer.dispose();
+		this.renderer.forceContextLoss();
 	}
 
 	render() {
