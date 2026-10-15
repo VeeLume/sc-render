@@ -15,7 +15,7 @@ pub use catalog::{
     SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart, ScenePiece,
 };
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
-pub use texture::{Rgba, TextureKind, Volume};
+pub use texture::{Mip, Rgba, TextureKind, Volume};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

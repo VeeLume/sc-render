@@ -198,11 +198,18 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
                 .assets()?
                 .texture(path, kind, max)
                 .map_err(|e| e.to_string())?;
-            let mut out = Vec::with_capacity(12 + t.data.len());
+            // Header: width, height, sRGB flag, level count; then every
+            // level's RGBA8, largest first (each half the one before).
+            let len = t.data.len() + t.mips.iter().map(|m| m.data.len()).sum::<usize>();
+            let mut out = Vec::with_capacity(16 + len);
             out.extend(t.width.to_le_bytes());
             out.extend(t.height.to_le_bytes());
             out.extend(u32::from(t.srgb).to_le_bytes());
+            out.extend((1 + t.mips.len() as u32).to_le_bytes());
             out.extend_from_slice(&t.data);
+            for m in &t.mips {
+                out.extend_from_slice(&m.data);
+            }
             Ok(out)
         }
         other => Err(format!("unknown route {other}")),

@@ -28,56 +28,86 @@ pub struct Rgba {
     pub width: u32,
     pub height: u32,
     pub data: Vec<u8>,
+    /// The smaller mip levels, each half the one before, down to 1 x 1: the
+    /// file's own mips, box-filtered below the smallest it stores. The
+    /// stored mips matter: the engine's texture compiler lowers a `ddna`
+    /// gloss where the normals average out, so finely tiled fabric turns
+    /// matte at a distance (`mesh_vinyl_01`: mean gloss 0.70 at full size,
+    /// 0.13 from its fourth mip on).
+    pub mips: Vec<Mip>,
     /// The engine reads it as sRGB ([`sc_extract::Texture::is_srgb`]); only
     /// ever set for [`TextureKind::Color`].
     pub srgb: bool,
 }
 
+/// One mip level, RGBA8.
+pub struct Mip {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
 pub(crate) fn decode(t: &sc_extract::Texture, kind: TextureKind, max_size: u32) -> Result<Rgba> {
+    let mut levels = decode_chain(&t.dds, max_size)?;
     match kind {
-        TextureKind::Color => Ok(Rgba {
-            srgb: t.is_srgb(),
-            ..decode_dds(&t.dds, max_size)?
-        }),
+        TextureKind::Color => return Ok(rgba(levels, t.is_srgb())),
         TextureKind::Normal => {
-            let mut img = decode_dds(&t.dds, max_size)?;
-            for px in img.data.as_chunks_mut::<4>().0 {
+            for px in levels
+                .iter_mut()
+                .flat_map(|m| m.data.as_chunks_mut::<4>().0)
+            {
                 let x = px[0] as f32 / 255.0 * 2.0 - 1.0;
                 let y = px[1] as f32 / 255.0 * 2.0 - 1.0;
                 let z = (1.0 - x * x - y * y).max(0.0).sqrt();
                 px[2] = ((z * 0.5 + 0.5) * 255.0).round() as u8;
                 px[3] = 255;
             }
-            Ok(img)
         }
         TextureKind::NormalGloss => {
-            let mut img = decode_dds(&t.dds, max_size)?;
             let alpha = match &t.alpha {
-                Some(a) => Some(decode_dds(a, max_size)?)
-                    .filter(|a| a.width == img.width && a.height == img.height),
+                Some(a) => Some(decode_chain(a, max_size)?).filter(|a| {
+                    a.len() == levels.len()
+                        && (a[0].width, a[0].height) == (levels[0].width, levels[0].height)
+                }),
                 None => None,
             };
-            let gloss: Vec<u8> = match &alpha {
-                Some(a) => a.data.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
-                None => img.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect(),
-            };
-            for (px, g) in img.data.as_chunks_mut::<4>().0.iter_mut().zip(gloss) {
-                px[2] = g;
-                px[3] = 255;
+            for (i, level) in levels.iter_mut().enumerate() {
+                let gloss: Vec<u8> = match &alpha {
+                    Some(a) => a[i].data.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
+                    None => level.data.as_chunks::<4>().0.iter().map(|p| p[3]).collect(),
+                };
+                for (px, g) in level.data.as_chunks_mut::<4>().0.iter_mut().zip(gloss) {
+                    px[2] = g;
+                    px[3] = 255;
+                }
             }
-            Ok(img)
         }
         TextureKind::Gloss => {
-            let (mut img, from_alpha_file) = match &t.alpha {
-                Some(a) => (decode_dds(a, max_size)?, true),
-                None => (decode_dds(&t.dds, max_size)?, false),
-            };
-            for px in img.data.as_chunks_mut::<4>().0 {
+            let from_alpha_file = t.alpha.is_some();
+            if let Some(a) = &t.alpha {
+                levels = decode_chain(a, max_size)?;
+            }
+            for px in levels
+                .iter_mut()
+                .flat_map(|m| m.data.as_chunks_mut::<4>().0)
+            {
                 let g = if from_alpha_file { px[0] } else { px[3] };
                 *px = [g, g, g, 255];
             }
-            Ok(img)
         }
+    }
+    Ok(rgba(levels, false))
+}
+
+fn rgba(levels: Vec<Mip>, srgb: bool) -> Rgba {
+    let mut levels = levels.into_iter();
+    let top = levels.next().expect("a decoded chain has a level");
+    Rgba {
+        width: top.width,
+        height: top.height,
+        data: top.data,
+        mips: levels.collect(),
+        srgb,
     }
 }
 
@@ -141,20 +171,63 @@ pub(crate) fn decode_volume(bytes: &[u8]) -> Result<Volume> {
     })
 }
 
-/// The largest mip that fits in `max_size`, decoded.
-fn decode_dds(bytes: &[u8], max_size: u32) -> Result<Rgba> {
+/// The mips from the largest that fits in `max_size` down, decoded, then
+/// box-filtered on to 1 x 1.
+fn decode_chain(bytes: &[u8], max_size: u32) -> Result<Vec<Mip>> {
     let dds = Dds::read(bytes).map_err(|e| Error::Decode(e.to_string()))?;
     let (w, h) = (dds.get_width(), dds.get_height());
     let mips = dds.get_num_mipmap_levels().max(1);
-    let mut mip = 0;
-    while mip + 1 < mips && (w >> mip).max(h >> mip) > max_size {
-        mip += 1;
+    let mut first = 0;
+    while first + 1 < mips && (w >> first).max(h >> first) > max_size {
+        first += 1;
     }
-    let img = image_dds::image_from_dds(&dds, mip).map_err(|e| Error::Decode(e.to_string()))?;
-    Ok(Rgba {
-        width: img.width(),
-        height: img.height(),
-        data: img.into_raw(),
-        srgb: false,
-    })
+    let mut levels: Vec<Mip> = Vec::new();
+    for mip in first..mips {
+        let img = image_dds::image_from_dds(&dds, mip).map_err(|e| Error::Decode(e.to_string()))?;
+        let next = Mip {
+            width: img.width(),
+            height: img.height(),
+            data: img.into_raw(),
+        };
+        // A level that does not halve the one before ends the stored chain.
+        if let Some(prev) = levels.last()
+            && (next.width, next.height) != ((prev.width / 2).max(1), (prev.height / 2).max(1))
+        {
+            break;
+        }
+        levels.push(next);
+    }
+    while let Some(last) = levels.last()
+        && (last.width, last.height) != (1, 1)
+    {
+        let half = halve(last);
+        levels.push(half);
+    }
+    Ok(levels)
+}
+
+/// 2 x 2 box filter (edge texels reused for odd sizes).
+fn halve(m: &Mip) -> Mip {
+    let (w, h) = ((m.width / 2).max(1), (m.height / 2).max(1));
+    let src = |x: u32, y: u32, c: usize| {
+        let (x, y) = (x.min(m.width - 1), y.min(m.height - 1));
+        u32::from(m.data[((y * m.width + x) * 4) as usize + c])
+    };
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..4 {
+                let sum = src(2 * x, 2 * y, c)
+                    + src(2 * x + 1, 2 * y, c)
+                    + src(2 * x, 2 * y + 1, c)
+                    + src(2 * x + 1, 2 * y + 1, c);
+                data.push(((sum + 2) / 4) as u8);
+            }
+        }
+    }
+    Mip {
+        width: w,
+        height: h,
+        data,
+    }
 }

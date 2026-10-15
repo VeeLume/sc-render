@@ -5,9 +5,11 @@ import * as THREE from 'three';
 const base = navigator.userAgent.includes('Windows') ? 'http://scr.localhost' : 'scr://localhost';
 
 /**
- * `color` and `mask` are delivered as stored; each is sampled as sRGB when
- * the engine flags it so (diffuse maps, blend maps) and as linear data
- * otherwise (HueAoLum maps). `mask` only names the intent.
+ * `color` and `mask` are delivered as stored. `color` (diffuse, decal
+ * sheets) is always sampled as sRGB: not every diffuse map carries the
+ * engine's sRGB flag, and reading unflagged ones as linear washes blacks
+ * out to grey. `mask` follows the flag: blend maps are sRGB, HueAoLum maps
+ * linear.
  */
 export type TextureKind = 'color' | 'mask' | 'normal' | 'gloss' | 'normal_gloss';
 
@@ -53,7 +55,7 @@ export function fetchHueLut(): Promise<THREE.Data3DTexture | null> {
 	return hueLut;
 }
 
-/** A decoded texture as a repeating, mipmapped DataTexture; `null` if missing. */
+/** A decoded texture with its stored mip chain, repeating; `null` if missing. */
 export function fetchTexture(path: string, kind: TextureKind, max = 1024): Promise<THREE.DataTexture | null> {
 	const key = `${kind}|${max}|${path.toLowerCase()}`;
 	let hit = textureCache.get(key);
@@ -64,13 +66,22 @@ export function fetchTexture(path: string, kind: TextureKind, max = 1024): Promi
 				const w = view.getUint32(0, true);
 				const h = view.getUint32(4, true);
 				const srgb = view.getUint32(8, true) !== 0;
-				const tex = new THREE.DataTexture(new Uint8Array(buf, 12), w, h, THREE.RGBAFormat);
+				const levels = view.getUint32(12, true);
+				// The file's own mips (they carry the engine's gloss filtering).
+				const mipmaps: { data: Uint8Array; width: number; height: number }[] = [];
+				let offset = 16;
+				for (let i = 0, mw = w, mh = h; i < levels; i++, mw = Math.max(1, mw >> 1), mh = Math.max(1, mh >> 1)) {
+					mipmaps.push({ data: new Uint8Array(buf, offset, mw * mh * 4), width: mw, height: mh });
+					offset += mw * mh * 4;
+				}
+				const tex = new THREE.DataTexture(mipmaps[0].data, w, h, THREE.RGBAFormat);
+				tex.mipmaps = mipmaps as unknown as THREE.DataTexture['mipmaps'];
 				tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
 				tex.magFilter = THREE.LinearFilter;
 				tex.minFilter = THREE.LinearMipmapLinearFilter;
-				tex.generateMipmaps = true;
+				tex.generateMipmaps = false;
 				tex.anisotropy = 8;
-				tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+				tex.colorSpace = kind === 'color' || srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
 				tex.needsUpdate = true;
 				return tex;
 			})
