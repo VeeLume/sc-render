@@ -23,17 +23,18 @@
 //                    engine flag asks), in priority order: layer 1 by R,
 //                    layer 2 by G of the rest, layer 3 by B of what is left,
 //                    the last layer fills the remainder.
-//                  - Per layer: colour = layer Diffuse x texture; F0 = layer
+//                  - Per layer (the game's layer packer): colour = layer
+//                    Diffuse x submaterial Diffuse x texture; F0 = layer
 //                    Specular; gloss = Shininess / 255 x GlossMult x texture
-//                    gloss. No submaterial-level gloss.
-//                  - The layer's TintMode says what is tinted: 1 (paints,
-//                    fabric) the colour, 2 (metals) the F0, 0 (weapon
-//                    layers) both. The MatLayer TintColor multiplies it;
-//                    PaletteTint 1-3 takes the tint palette's entry A-C,
-//                    multiplying the colour and replacing the F0. The entry's
-//                    glossiness always multiplies the layer gloss. (Shader:
-//                    palette flags; TintMode's role and TintColor on F0:
-//                    inferred from the layer data, mode 0 unverified.)
+//                    gloss (the submaterial's Specular and Shininess play no
+//                    part); tiling = UVTiling x the layer's LayerTiling.
+//                  - The layer's TintMode says what is tinted: 1 the colour,
+//                    2 the F0, 0 both. TintColor multiplies the colour; on
+//                    F0 it applies as is to cloth, as hue only to metals and
+//                    not at all otherwise. PaletteTint 1-3 takes the tint
+//                    palette's entry A-C, multiplying the colour and
+//                    replacing the F0 by the same split; the entry's
+//                    glossiness always multiplies the layer gloss.
 //                  - TexSlot13 HueAoLum map: .z scales colour and F0 by
 //                    0.8-1.2, .x hue-shifts them through the engine's hue LUT,
 //                    .y is ambient occlusion on both.
@@ -273,21 +274,35 @@ function shadingModel(sub: SubMaterialInfo): THREE.Vector2 {
 
 /**
  * What the MatLayer TintColor and a palette entry tint, by the layer's
- * `TintMode`: 1 the colour, 2 the specular (metals, whose diffuse is near
- * black), 0 both.
+ * `TintMode`: 1 the colour, 2 the specular, 0 both (the game's layer
+ * packer; the same split sets the shader's palette flags 4 and 8).
  */
 function tintTargets(sub: SubMaterialInfo): { color: boolean; spec: boolean } {
 	const mode = Number(sub.params.find(([k]) => k === 'TintMode')?.[1] ?? 0);
 	return { color: mode !== 2, spec: mode !== 1 };
 }
 
-async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promise<ResolvedLayer> {
+/**
+ * The TintColor's effect on a specular-tinted layer: cloth (ShadingModel 4)
+ * takes it as is; a metal (specular above 0.25) takes only its hue, scaled
+ * to a brightest channel of 1; anything else is left untinted.
+ */
+function specTint(sub: SubMaterialInfo, tint: THREE.Color): THREE.Color {
+	if (shadingModel(sub).x > 0) return tint.clone();
+	const peak = Math.max(tint.r, tint.g, tint.b);
+	if (Math.max(...sub.specular) > 0.25 && peak > 0) return tint.clone().multiplyScalar(1 / peak);
+	return new THREE.Color(1, 1, 1);
+}
+
+/** `parent`: the LayerBlend submaterial, whose Diffuse multiplies every layer's. */
+async function resolveLayer(l: LayerInfo | undefined, palette?: Palette, parent?: SubMaterialInfo): Promise<ResolvedLayer> {
+	// An empty slot, as the game's packer fills it: white, no specular, no gloss.
 	const fallback: ResolvedLayer = {
 		diff: null,
 		normalGloss: null,
 		color: new THREE.Color(1, 1, 1),
-		f0: new THREE.Color(0.04, 0.04, 0.04),
-		gloss: 0.5,
+		f0: new THREE.Color(0, 0, 0),
+		gloss: 0,
 		tiling: 1,
 		model: new THREE.Vector2()
 	};
@@ -301,17 +316,19 @@ async function resolveLayer(l: LayerInfo | undefined, palette?: Palette): Promis
 	const tints = tintTargets(sub);
 	const tint = color(l.tint);
 	const layerColor = color(sub.diffuse);
+	if (parent) layerColor.multiply(color(parent.diffuse));
 	if (tints.color) layerColor.multiply(tint);
 	if (entry && tints.color) layerColor.multiply(srgb(entry.tint));
 	const f0 = color(sub.specular);
-	if (tints.spec) f0.multiply(tint);
+	if (tints.spec) f0.multiply(specTint(sub, tint));
+	const layerTiling = Number(sub.params.find(([k]) => k === 'LayerTiling')?.[1] ?? 1) || 1;
 	return {
 		diff: diffSlot ? await fetchTexture(diffSlot.file, 'color') : null,
 		normalGloss: nrmSlot ? await fetchTexture(nrmSlot.file, 'normal_gloss') : null,
 		color: layerColor,
 		f0: entry && tints.spec ? srgb(entry.spec) : f0,
 		gloss: Math.min(1, (sub.shininess / 255) * l.gloss_mult) * (entry ? entry.gloss / 255 : 1),
-		tiling: l.uv_tiling || 1,
+		tiling: (l.uv_tiling || 1) * layerTiling,
 		model: shadingModel(sub)
 	};
 }
@@ -326,12 +343,12 @@ BLACK.needsUpdate = true;
 
 async function layerBlend(s: SubMaterialInfo, palette?: Palette): Promise<THREE.Material> {
 	// Layers sit in the slot their name gives (BaseLayer1-4); a slot no layer
-	// names holds a neutral white layer (the Horizon helmet's parts material
-	// names two; its blend-map black, slot 4, is white paint in game).
+	// names holds the packer's empty layer, matte white (the Horizon helmet's
+	// parts material names two; its blend-map black, slot 4, is white in game).
 	const named = [1, 2, 3, 4].map((n) => s.layers.find((l) => l.name === `BaseLayer${n}`));
 	if (!named.some(Boolean)) named[0] = s.layers[0];
 	const neutral = await resolveLayer(undefined, palette);
-	const layers = await Promise.all(named.map((l) => (l ? resolveLayer(l, palette) : undefined)));
+	const layers = await Promise.all(named.map((l) => (l ? resolveLayer(l, palette, s) : undefined)));
 	const blendSlot = s.features.includes('BLEND_MAP') ? slot(s, 'TexSlot12') : undefined;
 	const blend = blendSlot ? await fetchTexture(blendSlot.file, 'mask') : null;
 	const decalSlot =
