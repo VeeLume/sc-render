@@ -215,12 +215,14 @@ export class Cell {
 }
 
 /**
- * Equirectangular studio for reflections: a grey room, brighter above, with
- * one large softbox up and toward the camera. Bare polished metal (the MG
- * Scrip's aluminium, the P6-LR's tops) needs the room to read silver. Glossy surfaces then show a
- * defined highlight (the white blocks on the game's P6-LR icon) and keep
- * their colour elsewhere; an all-bright sky washed mirror-glossy paint out
- * to white. +Y is up and +Z points at the camera (the cell turns it).
+ * Equirectangular studio for reflections: a dark room, a little brighter
+ * above, with one large softbox up and toward the camera. Glossy surfaces
+ * show a defined highlight (the white blocks on the game's P6-LR icon) and
+ * keep their colour elsewhere. The room stays dark: the game's inventory has
+ * no reflection probe, and a grey room laid a grey film over every surface
+ * (black parts of the Black Cherry multitool never got below 31/255); an
+ * all-bright sky washed mirror-glossy paint out to white. +Y is up and +Z
+ * points at the camera (the cell turns it).
  */
 function studioEnvironment(): THREE.DataTexture {
 	const w = 128;
@@ -234,7 +236,7 @@ function studioEnvironment(): THREE.DataTexture {
 		for (let x = 0; x < w; x++) {
 			const az = ((x + 0.5) / w - 0.5) * 2 * Math.PI;
 			dir.set(Math.cos(elev) * Math.cos(az), Math.sin(elev), Math.cos(elev) * Math.sin(az));
-			const room = 0.2 + 0.2 * THREE.MathUtils.smoothstep(elev / DEG, -30, 60);
+			const room = 0.02 + 0.08 * THREE.MathUtils.smoothstep(elev / DEG, -30, 60);
 			const angle = dir.angleTo(box) / DEG;
 			const softbox = 2 * (1 - THREE.MathUtils.smoothstep(angle, 22, 32));
 			const v = room + softbox;

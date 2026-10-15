@@ -34,6 +34,7 @@
 		'Carryable_1H_CY_Physical_Currency_Scrip_Merc_1',
 		'none_pistol_ballistic_01',
 		'vgl_flightsuit_helmet_01_03_01',
+		'crlf_consumable_healing_01',
 		// Both records are named "Invictus Flight Jacket"; the dark brown
 		// leather one seen in game is _04.
 		'dmc_jacket_13_01_01',
