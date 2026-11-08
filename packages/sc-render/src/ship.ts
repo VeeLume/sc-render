@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildScene } from './cell';
-import { HOLO_BACKGROUND, HOLO_EDGE, HOLO_GRID, HOLO_HULL, holoMaterial, setHoloOpacity } from './holo';
+import { HOLO_BACKGROUND, HOLO_EDGE, HOLO_GRID, HOLO_HULL, MAX_BLEND, holoMaterial, setHoloOpacity } from './holo';
 import { Library, type RenderSource } from './library';
 import type { ScenePart, ShipScene } from './types';
 
@@ -36,13 +36,17 @@ export interface ShipViewOptions {
 const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
 
 /**
- * Crease line opacity per pixel per metre at the framed view. The lines add
- * up, so a capital ship (a tenth of a fighter's pixels per metre) goes white
- * at a fighter's opacity. Checked by eye from an Arrow to an Idris at
- * 520 x 346.
+ * Crease line strength from how many pixels a metre covers right now: lines
+ * packed tight merge into a mass unless they are dimmer, and get crisp as the
+ * camera closes in. Checked by eye from a Gladius to an Idris at card size.
  */
-const EDGE_OPACITY_PER_PPM = 0.0417;
-const EDGE_OPACITY = [0.04, 0.45] as const;
+const EDGE_STRENGTH = { base: 0.45, perPixelPerMetre: 0.045, max: 1 };
+/** What the hull's fill and lines keep while a part is lit. */
+const FOCUS_HULL = 0.55;
+/** Lines behind the ship's skin, as a share of those in front: depth at a glance. */
+const HIDDEN_EDGES = 0.22;
+/** A lit part's frame is at least this share of the ship's radius, each way. */
+const LIT_FRAME_MIN = 0.035;
 
 /** A distinct colour per damage part (golden-angle hues). */
 function partColour(i: number): THREE.Color {
@@ -109,8 +113,10 @@ interface HoloModel {
 	root: THREE.Group;
 	/** The hull first, when there is one. */
 	ports: PortDraw[];
-	/** Hull crease lines, when not skipped. */
+	/** Crease lines in front of the ship's skin. */
 	edges: THREE.LineSegments | null;
+	/** The same lines behind it, faint. */
+	hiddenEdges: THREE.LineSegments | null;
 	/** Gives back the buffer the geometry reads from. */
 	release?: () => void;
 }
@@ -166,6 +172,7 @@ export class ShipView {
 	private detailBuilding: Promise<void> | null = null;
 	private lit = false;
 	private warmth: { geometry: THREE.BufferGeometry; lines: THREE.Material } | null = null;
+	private litFrame: THREE.LineSegments | null = null;
 
 	private readonly interior = new THREE.Group();
 	private batches: InteriorBatch[] = [];
@@ -210,7 +217,6 @@ export class ShipView {
 		this.renderer.setSize(width, height, false);
 		this.camera.aspect = width / height;
 		this.camera.updateProjectionMatrix();
-		this.fitEdges();
 		this.render();
 	}
 
@@ -289,6 +295,7 @@ export class ShipView {
 		this.highlights = (path === null ? [] : Array.isArray(path) ? path : [path]).map((p) => p.toLowerCase());
 		this.highlightColour = colour;
 		this.colourPorts();
+		this.frameLit();
 		this.render();
 	}
 
@@ -342,8 +349,7 @@ export class ShipView {
 	/** The see-through hull's opacity in holo mode, 0..1. */
 	setHoloOpacity(opacity: number) {
 		this.holoOpacity = opacity;
-		const m = this.materials.get('holo-hull') as THREE.ShaderMaterial | undefined;
-		if (m) setHoloOpacity(m, opacity);
+		this.colourPorts();
 		this.render();
 	}
 
@@ -388,7 +394,9 @@ export class ShipView {
 	}
 
 	render() {
-		if (!this.disposed) this.renderer.render(this.scene, this.camera);
+		if (this.disposed) return;
+		this.fitEdges();
+		this.renderer.render(this.scene, this.camera);
 	}
 
 	/**
@@ -430,28 +438,32 @@ export class ShipView {
 			return { path: p.path, mesh, bounds };
 		});
 		let edges: THREE.LineSegments | null = null;
+		let hiddenEdges: THREE.LineSegments | null = null;
 		if (info.edges) {
 			const e = info.edges;
 			const g = new THREE.BufferGeometry();
 			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, e.offset, e.vertex_count * 4), 4, true));
-			edges = new THREE.LineSegments(
-				g,
-				new THREE.LineBasicMaterial({
-					color: HOLO_EDGE,
-					transparent: true,
-					opacity: 0.45,
-					depthWrite: false,
-					blending: THREE.AdditiveBlending,
-					clippingPlanes: this.planes,
-					toneMapped: false
-				})
-			);
-			// The lines span the hull, so they are never culled.
-			edges.frustumCulled = false;
-			placeDecoded(edges, new THREE.Vector3(...e.centre), e.scale);
-			root.add(edges);
+			edges = new THREE.LineSegments(g, this.edgeMaterial(THREE.LessEqualDepth));
+			hiddenEdges = new THREE.LineSegments(g, this.edgeMaterial(THREE.GreaterDepth));
+			for (const lines of [edges, hiddenEdges]) {
+				// The lines span the ship, so they are never culled.
+				lines.frustumCulled = false;
+				lines.renderOrder = 1;
+				placeDecoded(lines, new THREE.Vector3(...e.centre), e.scale);
+				root.add(lines);
+			}
 		}
-		return { root, ports, edges, release };
+		// The ship's skin into the depth buffer first, so the fill is one layer
+		// and lines can tell whether they are in front of it.
+		const skin = this.depthMaterial();
+		for (const { mesh } of ports) {
+			const depth = new THREE.Mesh(mesh.geometry, skin);
+			depth.renderOrder = -1;
+			depth.matrix.copy(mesh.matrix);
+			depth.matrixAutoUpdate = false;
+			root.add(depth);
+		}
+		return { root, ports, edges, hiddenEdges, release };
 	}
 
 	private async buildDetail(ship: ShipScene, log: string[]): Promise<DetailModel> {
@@ -532,6 +544,7 @@ export class ShipView {
 
 	/** Remove and free everything of the last ship. */
 	private clearModels() {
+		this.clearLitFrame();
 		for (const root of [this.holo?.root, this.detail?.root]) {
 			if (!root) continue;
 			this.scene.remove(root);
@@ -540,6 +553,7 @@ export class ShipView {
 		if (this.holo) {
 			for (const p of this.holo.ports) p.mesh.geometry.dispose();
 			if (this.holo.edges) disposeTree(this.holo.edges);
+			if (this.holo.hiddenEdges) disposeTree(this.holo.hiddenEdges);
 			this.holo.release?.();
 		}
 		if (this.detail) {
@@ -625,26 +639,100 @@ export class ShipView {
 		return m;
 	}
 
-	/** The crease lines' strength for how many pixels a metre covers when framed. */
+	/** The crease lines' strength for how many pixels a metre covers now, dimmed while a part is lit. */
 	private fitEdges() {
 		const edges = this.holo?.edges;
-		if (!edges) return;
-		// The framed view is about 1.6 radii tall.
-		const pixelsPerMetre = this.canvas.clientHeight / (1.6 * this.radius);
-		(edges.material as THREE.LineBasicMaterial).opacity = THREE.MathUtils.clamp(pixelsPerMetre * EDGE_OPACITY_PER_PPM, ...EDGE_OPACITY);
+		const hidden = this.holo?.hiddenEdges;
+		if (!edges || !hidden) return;
+		const distance = this.camera.position.distanceTo(this.controls.target);
+		const metresTall = (2 * distance * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) / this.camera.zoom;
+		const pixelsPerMetre = this.canvas.clientHeight / metresTall;
+		const strength = Math.min(EDGE_STRENGTH.max, EDGE_STRENGTH.base + pixelsPerMetre * EDGE_STRENGTH.perPixelPerMetre);
+		const focus = this.highlights.length ? FOCUS_HULL : 1;
+		(edges.material as THREE.LineBasicMaterial).opacity = strength * focus;
+		(hidden.material as THREE.LineBasicMaterial).opacity = strength * focus * HIDDEN_EDGES;
+	}
+
+	/** Writes the ship's skin to depth only, nudged back so lines on it stay in front. */
+	private depthMaterial(): THREE.Material {
+		return this.material('holo-depth', () =>
+			new THREE.MeshBasicMaterial({
+				colorWrite: false,
+				side: THREE.DoubleSide,
+				polygonOffset: true,
+				polygonOffsetFactor: 1,
+				polygonOffsetUnits: 1,
+				clippingPlanes: this.planes
+			})
+		);
+	}
+
+	private edgeMaterial(depthFunc: THREE.DepthModes): THREE.LineBasicMaterial {
+		return new THREE.LineBasicMaterial({
+			...MAX_BLEND,
+			color: HOLO_EDGE,
+			transparent: true,
+			premultipliedAlpha: true,
+			depthFunc,
+			depthWrite: false,
+			clippingPlanes: this.planes,
+			toneMapped: false
+		});
+	}
+
+	private hullMaterial(): THREE.ShaderMaterial {
+		return this.material('holo-hull', () =>
+			holoMaterial(HOLO_HULL, { opacity: this.holoOpacity, ghost: true, base: 0.5, rim: 1.1, planes: this.planes })
+		) as THREE.ShaderMaterial;
+	}
+
+	private clearLitFrame() {
+		if (!this.litFrame) return;
+		this.scene.remove(this.litFrame);
+		disposeTree(this.litFrame);
+		this.litFrame = null;
+	}
+
+	/**
+	 * Corner brackets in the highlight colour around what is lit, never smaller
+	 * than `LIT_FRAME_MIN`: a power plant is a few pixels at card size.
+	 */
+	private frameLit() {
+		this.clearLitFrame();
+		const box = this.highlights.length ? this.portBounds(this.highlights) : null;
+		if (!box) return;
+		const centre = box.getCenter(new THREE.Vector3());
+		const least = this.radius * LIT_FRAME_MIN;
+		const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+		half.set(Math.max(half.x, least), Math.max(half.y, least), Math.max(half.z, least));
+		const tick = Math.min(half.x, half.y, half.z) * 0.6;
+		const points: number[] = [];
+		for (const sx of [-1, 1])
+			for (const sy of [-1, 1])
+				for (const sz of [-1, 1]) {
+					const c = [centre.x + sx * half.x, centre.y + sy * half.y, centre.z + sz * half.z];
+					points.push(...c, c[0] - sx * tick, c[1], c[2]);
+					points.push(...c, c[0], c[1] - sy * tick, c[2]);
+					points.push(...c, c[0], c[1], c[2] - sz * tick);
+				}
+		const g = new THREE.BufferGeometry();
+		g.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+		const frame = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: this.highlightColour, depthTest: false, transparent: true, toneMapped: false }));
+		frame.renderOrder = 3;
+		this.litFrame = frame;
+		this.scene.add(frame);
 	}
 
 	private applyMode() {
 		const holo = this.mode === 'holo';
 		if (!holo) this.ensureLit();
-		this.fitEdges();
 		this.updateInterior();
 		if (this.holo) this.holo.root.visible = holo;
 		if (this.detail) this.detail.root.visible = !holo;
 		if (this.grid) this.grid.visible = holo;
 		this.scene.background = holo && this.showBackground ? new THREE.Color(HOLO_BACKGROUND) : null;
 		const planes = this.planes;
-		const interiorHolo = this.material('holo-interior', () => holoMaterial(HOLO_HULL, { opacity: 0.1, base: 0.35, rim: 0.7, planes }));
+		const interiorHolo = this.material('holo-interior', () => holoMaterial(HOLO_HULL, { opacity: 0.1, ghost: true, base: 0.35, rim: 0.7, planes }));
 		for (const b of this.batches) b.mesh.material = holo ? interiorHolo : b.original;
 		this.colourPorts();
 		for (const h of this.detail?.hull ?? []) {
@@ -679,19 +767,20 @@ export class ShipView {
 	private colourPorts() {
 		if (!this.holo) return;
 		const planes = this.planes;
-		const hull = this.material('holo-hull', () => holoMaterial(HOLO_HULL, { opacity: this.holoOpacity, planes }));
+		const hull = this.hullMaterial();
+		setHoloOpacity(hull, this.holoOpacity * (this.highlights.length ? FOCUS_HULL : 1));
 		const solid = (colour: THREE.ColorRepresentation) =>
-			this.material(`holo-solid-${new THREE.Color(colour).getHex()}`, () => holoMaterial(colour, { opacity: 1, base: 0.7, rim: 0.6, planes }));
+			this.material(`holo-solid-${new THREE.Color(colour).getHex()}`, () => holoMaterial(colour, { opacity: 1, base: 0.7, rim: 0.6, overHull: true, planes }));
 		const over = (colour: THREE.ColorRepresentation) =>
 			this.material(`holo-over-${new THREE.Color(colour).getHex()}`, () =>
-				holoMaterial(colour, { opacity: 1, base: 0.7, rim: 0.6, overHull: true, planes })
+				holoMaterial(colour, { opacity: 1, base: 1, rim: 0.8, overHull: true, planes })
 			);
 		for (const { path, mesh } of this.holo.ports) {
 			const lit = this.highlights.some((h) => path === h || path.startsWith(`${h}/`));
 			const colour = this.portColours.get(path);
-			// Lit parts come after the hull: its layers would paint over them.
+			// Lit and coloured parts come after the hull, which would cover them.
 			mesh.material = lit ? over(this.highlightColour) : colour !== undefined ? solid(colour) : hull;
-			mesh.renderOrder = lit ? 2 : 0;
+			mesh.renderOrder = lit ? 2 : colour !== undefined ? 1 : 0;
 		}
 	}
 
@@ -706,18 +795,10 @@ export class ShipView {
 		g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(12), 4, true));
 		g.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(12), 4, true));
 		g.setIndex([0, 1, 2]);
-		const planes = this.planes;
-		const hull = this.material('holo-hull', () => holoMaterial(HOLO_HULL, { opacity: this.holoOpacity, planes }));
-		const lines = new THREE.LineBasicMaterial({
-			color: HOLO_EDGE,
-			transparent: true,
-			depthWrite: false,
-			blending: THREE.AdditiveBlending,
-			clippingPlanes: planes,
-			toneMapped: false
-		});
+		const hull = this.hullMaterial();
+		const lines = this.edgeMaterial(THREE.LessEqualDepth);
 		const scene = new THREE.Scene();
-		for (const o of [new THREE.Mesh(g, hull), new THREE.LineSegments(g, lines)]) {
+		for (const o of [new THREE.Mesh(g, hull), new THREE.Mesh(g, this.depthMaterial()), new THREE.LineSegments(g, lines)]) {
 			o.frustumCulled = false;
 			scene.add(o);
 		}

@@ -22,11 +22,11 @@ use serde::Serialize;
 
 use crate::{Assets, BoneInfo, MaterialInfo, ScenePart};
 
-/// Above this many hull triangles a ship gets no crease lines: they would
-/// merge into a solid mass at any size a ship that big is shown at.
-const EDGE_LIMIT: usize = 1_500_000;
 /// Two faces meeting at more than this draw a crease, degrees.
 const CREASE_ANGLE: f64 = 30.0;
+/// Crease lines shorter than this share of the ship's radius are dropped: a
+/// pixel or less at the framed view, up to a full-window canvas.
+const SHORTEST_LINE: f32 = 1.0 / 600.0;
 
 /// A built hologram and what is in it.
 pub struct Holo {
@@ -161,7 +161,7 @@ impl Assets {
         let ports: Vec<(String, Vec<Instance>)> = placer.ports.into_iter().collect();
         let meshes_drawn: usize = ports.iter().map(|(_, l)| l.len()).sum();
 
-        let mut info = assemble(&ports, &mut notes, target);
+        let mut info = assemble(&ports, target);
         notes.push(format!(
             "holo: {} draws from {meshes_drawn} meshes, {:.0} MB",
             info.ports.len(),
@@ -633,10 +633,9 @@ struct Survey {
     vertices: u32,
     min: [f32; 3],
     max: [f32; 3],
-    lines: Vec<[f32; 3]>,
 }
 
-fn survey(inst: &Instance, with_creases: bool) -> Survey {
+fn survey(inst: &Instance) -> Survey {
     let source = inst.indices();
     let mut slots = Slots::new(source);
     let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
@@ -651,16 +650,7 @@ fn survey(inst: &Instance, with_creases: bool) -> Survey {
             }
         }
     }
-    Survey {
-        vertices,
-        min,
-        max,
-        lines: if with_creases {
-            creases(inst)
-        } else {
-            Vec::new()
-        },
-    }
+    Survey { vertices, min, max }
 }
 
 /// One submesh's share of the buffer.
@@ -719,6 +709,46 @@ fn fill(job: &mut Job) {
     }
 }
 
+/// Every part's crease lines, not only the hull's: without them a dense
+/// mounted item (a Centaurus engine) reads as a flat patch over the ship.
+/// A submesh used many times (a turret, a door) is searched once, and lines
+/// too short to see at the framed view are left out.
+fn crease_lines(flat: &[&Instance], surveys: &[Survey]) -> Vec<[f32; 3]> {
+    let mut seen: HashMap<(*const MeshGeometry, usize), usize> = HashMap::new();
+    let mut distinct: Vec<&Instance> = Vec::new();
+    let mut which = Vec::with_capacity(flat.len());
+    for inst in flat {
+        let next = distinct.len();
+        let at = *seen
+            .entry((Arc::as_ptr(&inst.mesh), inst.submesh))
+            .or_insert(next);
+        if at == next {
+            distinct.push(inst);
+        }
+        which.push(at);
+    }
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for s in surveys.iter().filter(|s| s.vertices > 0) {
+        for k in 0..3 {
+            min[k] = min[k].min(s.min[k]);
+            max[k] = max[k].max(s.max[k]);
+        }
+    }
+    let radius = (0..3)
+        .map(|k| (max[k] - min[k]) * 0.5)
+        .map(|h| h * h)
+        .sum::<f32>()
+        .sqrt();
+    let shortest = if radius.is_finite() {
+        radius * SHORTEST_LINE
+    } else {
+        0.0
+    };
+    let pairs = across_cores(&distinct, |inst| creases(inst, shortest));
+    let jobs: Vec<(&Instance, usize)> = flat.iter().copied().zip(which).collect();
+    across_cores(&jobs, |(inst, at)| place_lines(inst, &pairs[*at], shortest)).concat()
+}
+
 /// Cut the next `len` bytes at `offset` off `rest`, which starts at `cursor`.
 fn carve<'a>(
     rest: &mut &'a mut [u8],
@@ -744,30 +774,11 @@ fn front<'a>(slice: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
 /// memory, and fill it across every core.
 fn assemble<'b>(
     ports: &[(String, Vec<Instance>)],
-    notes: &mut Vec<String>,
     target: impl FnOnce(usize) -> &'b mut [u8],
 ) -> HoloInfo {
-    let hull_triangles: usize = ports
-        .iter()
-        .find(|(path, _)| path.is_empty())
-        .map_or(0, |(_, list)| {
-            list.iter().map(|i| i.indices().len() / 3).sum()
-        });
-    let with_creases = hull_triangles <= EDGE_LIMIT;
-    if !with_creases {
-        notes.push(format!(
-            "holo: {:.2} M hull triangles, no crease lines",
-            hull_triangles as f64 / 1e6
-        ));
-    }
-    let flat: Vec<(&Instance, bool)> = ports
-        .iter()
-        .flat_map(|(path, list)| {
-            list.iter()
-                .map(move |i| (i, path.is_empty() && with_creases))
-        })
-        .collect();
-    let surveys = across_cores(&flat, |(inst, creased)| survey(inst, *creased));
+    let flat: Vec<&Instance> = ports.iter().flat_map(|(_, list)| list.iter()).collect();
+    let surveys = across_cores(&flat, |inst| survey(inst));
+    let lines = crease_lines(&flat, &surveys);
 
     let mut info = HoloInfo::default();
     let mut size = 0;
@@ -808,10 +819,6 @@ fn assemble<'b>(
         });
     }
 
-    let lines: Vec<[f32; 3]> = surveys
-        .iter()
-        .flat_map(|s| s.lines.iter().copied())
-        .collect();
     let edge_frame = (!lines.is_empty()).then(|| {
         let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for p in &lines {
@@ -946,40 +953,62 @@ type QuickMap<K, V> = HashMap<K, V, BuildHasherDefault<Quick>>;
 /// An edge seen once so far: its two vertices and its face's normal.
 type OpenEdge = (u32, u32, [f64; 3]);
 
-/// One submesh's crease lines as point pairs in the ship frame: an edge
-/// where two faces meet beyond [`CREASE_ANGLE`], or with one face only.
-/// Vertices weld by position to a tenth of a millimetre.
-fn creases(inst: &Instance) -> Vec<[f32; 3]> {
+/// A position, welded to a tenth of a millimetre, as a 64-bit key. Collisions
+/// are about one in 10^7 even on a capital ship's hull, and would only cost
+/// one line.
+fn weld_key(p: &[f32; 3]) -> u64 {
+    p.iter().fold(0u64, |h, &c| {
+        let q = (f64::from(c) * 1e4).round() as i64 as u64;
+        (h.rotate_left(23) ^ q).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    })
+}
+
+/// Direction matters: an edge and its reverse must get different keys.
+fn edge_key(a: u64, b: u64) -> u64 {
+    a.rotate_left(29).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ b
+}
+
+/// One submesh's crease lines as vertex pairs: an edge where two faces meet
+/// beyond [`CREASE_ANGLE`], or with one face only. Edges shorter than
+/// `shortest` never reach the table: most of a hull's are, and they could
+/// not be drawn anyway.
+fn creases(inst: &Instance, shortest: f32) -> Vec<[u32; 2]> {
     let positions = &inst.mesh.positions;
     let indices = inst.indices();
     let threshold = CREASE_ANGLE.to_radians().cos();
-    let mut weld: QuickMap<[i64; 3], u32> = QuickMap::default();
-    let mut open: QuickMap<u64, Option<OpenEdge>> = QuickMap::default();
-    let mut lines = Vec::new();
-    let emit = |lines: &mut Vec<[f32; 3]>, a: u32, b: u32| {
-        lines.push(apply(&inst.at, &positions[a as usize]));
-        lines.push(apply(&inst.at, &positions[b as usize]));
+    let least = shortest * shortest;
+    let long = |a: u32, b: u32| {
+        let (p, q) = (positions[a as usize], positions[b as usize]);
+        let (x, y, z) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+        x * x + y * y + z * z >= least
     };
+    // Sized up front: growing the table was most of the cost.
+    let mut open: QuickMap<u64, Option<OpenEdge>> =
+        QuickMap::with_capacity_and_hasher(indices.len() / 2, Default::default());
+    let mut lines = Vec::new();
     for t in indices.as_chunks::<3>().0 {
-        let ids = [t[0], t[1], t[2]].map(|v| {
-            let key = positions[v as usize].map(|c| (f64::from(c) * 1e4).round() as i64);
-            let next = weld.len() as u32;
-            *weld.entry(key).or_insert(next)
-        });
+        let keep = [long(t[0], t[1]), long(t[1], t[2]), long(t[2], t[0])];
+        if keep == [false; 3] {
+            continue;
+        }
+        let ids = [t[0], t[1], t[2]].map(|v| weld_key(&positions[v as usize]));
         if ids[0] == ids[1] || ids[1] == ids[2] || ids[2] == ids[0] {
             continue;
         }
         let normal = triangle_normal(t.iter().map(|&v| positions[v as usize]));
         for j in 0..3 {
+            if !keep[j] {
+                continue;
+            }
             let (next, a, b) = ((j + 1) % 3, t[j], t[(j + 1) % 3]);
-            let edge = u64::from(ids[j]) << 32 | u64::from(ids[next]);
-            let reverse = u64::from(ids[next]) << 32 | u64::from(ids[j]);
+            let edge = edge_key(ids[j], ids[next]);
+            let reverse = edge_key(ids[next], ids[j]);
             if let Some(slot) = open.get_mut(&reverse)
                 && let Some((_, _, other)) = *slot
             {
                 let dot = normal[0] * other[0] + normal[1] * other[1] + normal[2] * other[2];
                 if dot <= threshold {
-                    emit(&mut lines, a, b);
+                    lines.push([a, b]);
                 }
                 *slot = None;
             } else {
@@ -987,10 +1016,25 @@ fn creases(inst: &Instance) -> Vec<[f32; 3]> {
             }
         }
     }
-    for (a, b, _) in open.into_values().flatten() {
-        emit(&mut lines, a, b);
-    }
+    lines.extend(open.into_values().flatten().map(|(a, b, _)| [a, b]));
     lines
+}
+
+/// `inst`'s crease lines as point pairs in the ship frame, without those
+/// shorter than `shortest`.
+fn place_lines(inst: &Instance, pairs: &[[u32; 2]], shortest: f32) -> Vec<[f32; 3]> {
+    let least = shortest * shortest;
+    let mut out = Vec::with_capacity(pairs.len());
+    for &[a, b] in pairs {
+        let p = apply(&inst.at, &inst.mesh.positions[a as usize]);
+        let q = apply(&inst.at, &inst.mesh.positions[b as usize]);
+        let (x, y, z) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+        if x * x + y * y + z * z >= least {
+            out.push(p);
+            out.push(q);
+        }
+    }
+    out
 }
 
 fn triangle_normal(mut points: impl Iterator<Item = [f32; 3]>) -> [f64; 3] {
@@ -1063,8 +1107,8 @@ mod tests {
             [1.0, 1.0, 0.0],
             [0.0, 1.0, 0.0],
         ];
-        let lines = creases(&instance(quad, vec![0, 1, 2, 0, 2, 3], IDENTITY));
-        assert_eq!(lines.len(), 8, "four rim edges, no diagonal");
+        let lines = creases(&instance(quad, vec![0, 1, 2, 0, 2, 3], IDENTITY), 0.0);
+        assert_eq!(lines.len(), 4, "four rim edges, no diagonal");
     }
 
     #[test]
@@ -1076,8 +1120,16 @@ mod tests {
             [0.0, 0.0, 1.0],
         ];
         // Share the edge 0-1; the faces meet at 90 degrees.
-        let lines = creases(&instance(fold, vec![0, 1, 2, 1, 0, 3], IDENTITY));
-        assert_eq!(lines.len(), 10, "the fold plus the four open edges");
+        let lines = creases(&instance(fold, vec![0, 1, 2, 1, 0, 3], IDENTITY), 0.0);
+        assert_eq!(lines.len(), 5, "the fold plus the four open edges");
+    }
+
+    #[test]
+    fn lines_shorter_than_the_limit_are_dropped() {
+        let positions = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.01, 0.0, 0.0]];
+        let inst = instance(positions, vec![0, 1, 2], IDENTITY);
+        let lines = place_lines(&inst, &[[0, 1], [1, 2]], 1.0);
+        assert_eq!(lines.len(), 2, "one line kept, as a point pair");
     }
 
     #[test]
@@ -1095,7 +1147,7 @@ mod tests {
         )];
         let mut buffer = Vec::new();
         let target = &mut buffer;
-        let info = assemble(&ports, &mut Vec::new(), move |size| {
+        let info = assemble(&ports, move |size| {
             target.resize(size, 0);
             target.as_mut_slice()
         });
@@ -1128,7 +1180,7 @@ mod tests {
         let ports = vec![("gun".to_string(), vec![a, b])];
         let mut buffer = Vec::new();
         let target = &mut buffer;
-        let info = assemble(&ports, &mut Vec::new(), move |size| {
+        let info = assemble(&ports, move |size| {
             target.resize(size, 0);
             target.as_mut_slice()
         });

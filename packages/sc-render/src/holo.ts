@@ -44,8 +44,16 @@ void main() {
 	float rim = pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 2.0);
 	float light = 0.35 + 0.65 * max(dot(n, normalize(vec3(0.3, 0.6, 0.75))), 0.0);
 	vec3 colour = uColor * (uBase * light + uRim * rim);
-	gl_FragColor = vec4(colour, uOpacity * (0.45 + 0.55 * rim));
+	#ifdef GHOST
+		gl_FragColor = vec4(colour * uOpacity, 1.0);
+	#else
+		gl_FragColor = vec4(colour, uOpacity * (0.45 + 0.55 * rim));
+	#endif
 	#include <colorspace_fragment>
+	#ifdef GHOST
+		// Alpha as strong as the colour, so a transparent canvas composites it right.
+		gl_FragColor.a = max(gl_FragColor.r, max(gl_FragColor.g, gl_FragColor.b));
+	#endif
 }
 `;
 
@@ -61,13 +69,31 @@ export interface HoloOptions {
 	 * do not paint over it (give the mesh a higher `renderOrder`).
 	 */
 	overHull?: boolean;
+	/**
+	 * See-through by keeping the brightest surface at each pixel instead of
+	 * blending them (see {@link MAX_BLEND}); `opacity` is then its strength.
+	 */
+	ghost?: boolean;
 	planes: THREE.Plane[];
 }
+
+/**
+ * Keep the brightest of what lands on a pixel. However many of a ship's
+ * layers stack up, the result is no brighter than one of them: alpha blending
+ * builds them up to a solid colour, adding them burns to white.
+ */
+export const MAX_BLEND = {
+	blending: THREE.CustomBlending,
+	blendEquation: THREE.MaxEquation,
+	blendSrc: THREE.OneFactor,
+	blendDst: THREE.OneFactor
+} as const;
 
 /** A hologram material in `colour`. */
 export function holoMaterial(colour: THREE.ColorRepresentation, o: HoloOptions): THREE.ShaderMaterial {
 	const solid = o.opacity >= 1;
 	return new THREE.ShaderMaterial({
+		...(o.ghost ? { ...MAX_BLEND, defines: { GHOST: 1 } } : {}),
 		uniforms: {
 			uColor: { value: new THREE.Color(colour) },
 			// Solid: enough that alpha is 1 even face-on (0.45 x 3).
@@ -80,6 +106,8 @@ export function holoMaterial(colour: THREE.ColorRepresentation, o: HoloOptions):
 		// In three's transparent queue, the only way to come after the hull.
 		transparent: !solid || !!o.overHull,
 		depthWrite: solid,
+		// Over the hull means over it: the depth pre-pass holds the hull's skin.
+		depthTest: !o.overHull,
 		side: THREE.DoubleSide,
 		clipping: true,
 		clippingPlanes: o.planes,
