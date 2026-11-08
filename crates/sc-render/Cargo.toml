@@ -1,6 +1,6 @@
 [package]
 name = "sc-render"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Star Citizen models, materials and textures from the local install, prepared for a GPU renderer"
 
