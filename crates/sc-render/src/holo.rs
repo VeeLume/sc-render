@@ -11,7 +11,7 @@
 //! the whole buffer on upload. A position decodes to the ship frame as
 //! `centre + xyz * scale`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,8 +27,6 @@ use crate::{Assets, BoneInfo, MaterialInfo, ScenePart};
 const EDGE_LIMIT: usize = 1_500_000;
 /// Two faces meeting at more than this draw a crease, degrees.
 const CREASE_ANGLE: f64 = 30.0;
-/// A port with more indices than this merges across every core.
-const BIG_PORT_INDICES: usize = 300_000;
 
 /// A built hologram and what is in it.
 pub struct Holo {
@@ -93,12 +91,32 @@ impl Assets {
     /// # }
     /// ```
     pub fn holo(&self, root: &ScenePart) -> Holo {
+        let mut buffer = Vec::new();
+        let target = &mut buffer;
+        let info = self.holo_into(root, move |size| {
+            target.resize(size, 0);
+            target.as_mut_slice()
+        });
+        Holo { info, buffer }
+    }
+
+    /// [`holo`](Self::holo), written into the memory `target` hands out for
+    /// the size it is told: every core fills it directly, so a host with
+    /// memory the page can see copies nothing. `target` must return exactly
+    /// that many bytes.
+    pub fn holo_into<'b>(
+        &self,
+        root: &ScenePart,
+        target: impl FnOnce(usize) -> &'b mut [u8],
+    ) -> HoloInfo {
         let started = Instant::now();
         let mut notes = Vec::new();
 
         let mut files = Files::default();
         scan(root, &mut files);
-        let paths: Vec<(&String, &&str)> = files.geometry.iter().collect();
+        // Scan order, not sorted: the hull comes first, and it is the file
+        // everything else waits for.
+        let paths: Vec<(&String, &&str)> = files.geometry.iter().map(|(k, p)| (k, p)).collect();
         let read = across_cores(&paths, |(_, path)| {
             MeshGeometry::read(self.source(), path).map(Arc::new)
         });
@@ -143,79 +161,11 @@ impl Assets {
         let ports: Vec<(String, Vec<Instance>)> = placer.ports.into_iter().collect();
         let meshes_drawn: usize = ports.iter().map(|(_, l)| l.len()).sum();
 
-        // Big ports split across the cores themselves; small ones share them.
-        let is_big = |list: &[Instance]| {
-            list.iter()
-                .map(|i| i.mesh.submeshes[i.submesh].index_count as usize)
-                .sum::<usize>()
-                > BIG_PORT_INDICES
-        };
-        let (big, small): (Vec<_>, Vec<_>) = ports.iter().partition(|(_, list)| is_big(list));
-        let mut merged = across_cores(&small, |(path, list)| merge(path, list, false));
-        merged.extend(big.iter().map(|(path, list)| merge(path, list, true)));
-        merged.sort_by(|a, b| a.path.cmp(&b.path));
-
-        let hull = ports.iter().find(|(path, _)| path.is_empty());
-        let hull_triangles: usize = hull.map_or(0, |(_, list)| {
-            list.iter()
-                .map(|i| i.mesh.submeshes[i.submesh].index_count as usize / 3)
-                .sum()
-        });
-        let edges = match hull {
-            Some((_, list)) if hull_triangles <= EDGE_LIMIT => {
-                let lines = across_cores(list, creases).concat();
-                (!lines.is_empty()).then(|| quantise_lines(&lines))
-            }
-            Some(_) => {
-                notes.push(format!(
-                    "holo: {:.2} M hull triangles, no crease lines",
-                    hull_triangles as f64 / 1e6
-                ));
-                None
-            }
-            None => None,
-        };
-
-        let mut size = 0;
-        for p in &merged {
-            size = align4(size) + p.positions.len();
-            size = align4(size) + p.normals.len();
-            size = align4(size) + p.indices.len();
-        }
-        if let Some(e) = &edges {
-            size = align4(size) + e.bytes.len();
-        }
-        let mut buffer = Vec::with_capacity(size);
-        let mut info = HoloInfo::default();
-        for p in merged {
-            let positions_offset = append(&mut buffer, &p.positions);
-            let normals_offset = append(&mut buffer, &p.normals);
-            let indices_offset = append(&mut buffer, &p.indices);
-            info.ports.push(HoloPort {
-                path: p.path,
-                centre: p.centre,
-                scale: p.scale,
-                min: p.min,
-                max: p.max,
-                vertex_count: p.vertex_count,
-                index_count: p.index_count,
-                positions_offset,
-                normals_offset,
-                indices_offset,
-                wide_indices: p.wide_indices,
-            });
-        }
-        info.edges = edges.map(|e| HoloEdges {
-            centre: e.centre,
-            scale: e.scale,
-            vertex_count: e.vertex_count,
-            offset: append(&mut buffer, &e.bytes),
-        });
-        info.byte_length = buffer.len() as u32;
+        let mut info = assemble(&ports, &mut notes, target);
         notes.push(format!(
             "holo: {} draws from {meshes_drawn} meshes, {:.0} MB",
             info.ports.len(),
-            buffer.len() as f64 / 1e6
+            f64::from(info.byte_length) / 1e6
         ));
         notes.push(format!(
             "holo: files {} ms, built {} ms",
@@ -223,7 +173,7 @@ impl Assets {
             (started.elapsed() - loaded).as_millis()
         ));
         info.notes = notes;
-        Holo { info, buffer }
+        info
     }
 }
 
@@ -231,18 +181,12 @@ fn align4(n: usize) -> usize {
     n.next_multiple_of(4)
 }
 
-/// Append 4-byte aligned; returns where it landed.
-fn append(buffer: &mut Vec<u8>, bytes: &[u8]) -> u32 {
-    buffer.resize(align4(buffer.len()), 0);
-    let at = buffer.len() as u32;
-    buffer.extend_from_slice(bytes);
-    at
-}
-
 /// `f` over `items` on every core; results in `items`' order.
 fn across_cores<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
+    // Three quarters of the logical cores measured best from Arrow to Polaris:
+    // past that, threads only fight the one big hull for memory and turbo.
+    let workers = (std::thread::available_parallelism().map_or(4, |n| n.get()) * 3 / 4)
+        .max(1)
         .min(items.len());
     if workers < 2 {
         return items.iter().map(f).collect();
@@ -269,7 +213,9 @@ fn across_cores<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
 /// Every file a scene needs, by lower-case path.
 #[derive(Default)]
 struct Files<'a> {
-    geometry: BTreeMap<String, &'a str>,
+    /// In the order the scene names them, root first.
+    geometry: Vec<(String, &'a str)>,
+    seen: BTreeSet<String>,
     skeletons: BTreeMap<String, &'a str>,
     /// Worn `.skin` files, whose bones can carry attachments.
     skins: Vec<String>,
@@ -282,7 +228,9 @@ fn scan<'a>(part: &'a ScenePart, files: &mut Files<'a>) {
             files.skeletons.insert(key.clone(), &piece.geometry);
             files.skins.push(key.clone());
         }
-        files.geometry.insert(key, &piece.geometry);
+        if files.seen.insert(key.clone()) {
+            files.geometry.push((key, &piece.geometry));
+        }
     }
     if let Some(s) = &part.skeleton {
         files.skeletons.insert(s.to_ascii_lowercase(), s);
@@ -616,159 +564,331 @@ impl Placer<'_> {
     }
 }
 
-struct Merged {
-    path: String,
-    centre: [f32; 3],
-    scale: f32,
-    min: [f32; 3],
-    max: [f32; 3],
-    vertex_count: u32,
-    index_count: u32,
-    positions: Vec<u8>,
-    normals: Vec<u8>,
-    indices: Vec<u8>,
-    wide_indices: bool,
-}
-
 /// The frame positions are quantised in: bounds centre and largest half extent.
-fn frame(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3], [f32; 3], f32) {
-    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for p in positions {
-        for k in 0..3 {
-            min[k] = min[k].min(p[k]);
-            max[k] = max[k].max(p[k]);
-        }
-    }
-    if positions.is_empty() {
-        return ([0.0; 3], [0.0; 3], [0.0; 3], 1.0);
-    }
+fn fit(min: &[f32; 3], max: &[f32; 3]) -> ([f32; 3], f32) {
     let centre = std::array::from_fn(|k| (min[k] + max[k]) * 0.5);
     let half = (0..3).map(|k| (max[k] - min[k]) * 0.5).fold(0.0, f32::max);
-    (min, max, centre, if half > 0.0 { half } else { 1.0 })
+    (centre, if half > 0.0 { half } else { 1.0 })
 }
 
-fn write_positions(positions: &[[f32; 3]], centre: &[f32; 3], scale: f32) -> Vec<u8> {
-    let mut out = vec![0u8; positions.len() * 8];
-    for (chunk, p) in out.as_chunks_mut::<8>().0.iter_mut().zip(positions) {
-        for k in 0..3 {
-            let q = ((p[k] - centre[k]) / scale * 32767.0).round() as i16;
-            chunk[k * 2..k * 2 + 2].copy_from_slice(&q.to_le_bytes());
+fn write_position(chunk: &mut [u8; 8], p: &[f32; 3], centre: &[f32; 3], scale: f32) {
+    for k in 0..3 {
+        let q = ((p[k] - centre[k]) / scale * 32767.0).round() as i16;
+        chunk[k * 2..k * 2 + 2].copy_from_slice(&q.to_le_bytes());
+    }
+}
+
+fn write_normal(chunk: &mut [u8; 4], n: &[f32; 3]) {
+    for k in 0..3 {
+        chunk[k] = ((n[k] * 127.0).round() as i8) as u8;
+    }
+}
+
+/// Where each vertex a submesh indexes lands in its own output (every submesh
+/// of a file shares the file's whole vertex buffer).
+enum Slots {
+    /// A submesh's vertices are a run of the file's: a table over that run.
+    Run { lo: u32, table: Vec<u32> },
+    /// A scattered one must not allocate the whole file.
+    Scattered(QuickMap<u32, u32>),
+}
+
+impl Slots {
+    fn new(source: &[u32]) -> Self {
+        let lo = source.iter().copied().min().unwrap_or(0);
+        let hi = source.iter().copied().max().unwrap_or(0);
+        let span = (hi - lo) as usize + 1;
+        if span <= source.len().saturating_mul(8).max(1024) {
+            Slots::Run {
+                lo,
+                table: vec![u32::MAX; span],
+            }
+        } else {
+            Slots::Scattered(QuickMap::default())
         }
     }
-    out
+
+    /// `v`'s output vertex, which is `next` if `v` is new; and whether it is.
+    fn slot(&mut self, v: u32, next: u32) -> (u32, bool) {
+        match self {
+            Slots::Run { lo, table } => {
+                let s = &mut table[(v - *lo) as usize];
+                if *s == u32::MAX {
+                    *s = next;
+                    (next, true)
+                } else {
+                    (*s, false)
+                }
+            }
+            Slots::Scattered(map) => {
+                let at = *map.entry(v).or_insert(next);
+                (at, at == next)
+            }
+        }
+    }
 }
 
-/// One submesh in the ship frame, with only the vertices it indexes (every
-/// submesh of a file shares the file's whole vertex buffer).
-struct Placed {
-    positions: Vec<[f32; 3]>,
-    normals: Option<Vec<[f32; 3]>>,
-    indices: Vec<u32>,
+/// What one submesh will take up, before anything is written.
+struct Survey {
+    vertices: u32,
+    min: [f32; 3],
+    max: [f32; 3],
+    lines: Vec<[f32; 3]>,
 }
 
-fn place_submesh(inst: &Instance) -> Placed {
+fn survey(inst: &Instance, with_creases: bool) -> Survey {
+    let source = inst.indices();
+    let mut slots = Slots::new(source);
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let mut vertices = 0;
+    for &v in source {
+        if slots.slot(v, vertices).1 {
+            vertices += 1;
+            let p = apply(&inst.at, &inst.mesh.positions[v as usize]);
+            for k in 0..3 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+    }
+    Survey {
+        vertices,
+        min,
+        max,
+        lines: if with_creases {
+            creases(inst)
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// One submesh's share of the buffer.
+struct Job<'a> {
+    inst: &'a Instance,
+    positions: &'a mut [u8],
+    normals: &'a mut [u8],
+    indices: &'a mut [u8],
+    /// Its port's vertices before this submesh.
+    base: u32,
+    wide: bool,
+    centre: [f32; 3],
+    scale: f32,
+}
+
+fn fill(job: &mut Job) {
+    let inst = job.inst;
     let g = &inst.mesh;
     let source = inst.indices();
     let has_normals = g.normals.len() == g.positions.len();
     let nm = normal_matrix(&inst.at);
-    let mut positions = Vec::with_capacity(source.len() / 2);
-    let mut normals = Vec::with_capacity(if has_normals { source.len() / 2 } else { 0 });
-    let mut indices = Vec::with_capacity(source.len());
-    let mut add = |v: u32| {
-        let i = v as usize;
-        positions.push(apply(&inst.at, &g.positions[i]));
-        if has_normals {
-            normals.push(apply_normal(&nm, &g.normals[i]));
-        }
-        positions.len() as u32 - 1
-    };
-    let lo = source.iter().copied().min().unwrap_or(0);
-    let hi = source.iter().copied().max().unwrap_or(0);
-    let span = (hi - lo) as usize + 1;
-    // A submesh's vertices are a run of the file's, so a table over that run
-    // is the fast path; a scattered one must not allocate the whole file.
-    if span <= source.len().saturating_mul(8).max(1024) {
-        let mut slot = vec![u32::MAX; span];
-        for &v in source {
-            let s = &mut slot[(v - lo) as usize];
-            if *s == u32::MAX {
-                *s = add(v);
+    let positions = job.positions.as_chunks_mut::<8>().0;
+    let normals = job.normals.as_chunks_mut::<4>().0;
+    let mut slots = Slots::new(source);
+    let mut next = 0;
+    // Only geometry that came without normals needs these.
+    let (mut world, mut local) = (Vec::new(), Vec::new());
+    for (k, &v) in source.iter().enumerate() {
+        let (at, new) = slots.slot(v, next);
+        if new {
+            let i = v as usize;
+            let p = apply(&inst.at, &g.positions[i]);
+            write_position(&mut positions[next as usize], &p, &job.centre, job.scale);
+            if has_normals {
+                let n = apply_normal(&nm, &g.normals[i]);
+                write_normal(&mut normals[next as usize], &n);
+            } else {
+                world.push(p);
             }
-            indices.push(*s);
+            next += 1;
         }
-    } else {
-        let mut slot: QuickMap<u32, u32> = QuickMap::default();
-        for &v in source {
-            indices.push(*slot.entry(v).or_insert_with(|| add(v)));
+        if !has_normals {
+            local.push(at);
+        }
+        let index = job.base + at;
+        if job.wide {
+            job.indices[k * 4..k * 4 + 4].copy_from_slice(&index.to_le_bytes());
+        } else {
+            job.indices[k * 2..k * 2 + 2].copy_from_slice(&(index as u16).to_le_bytes());
         }
     }
-    Placed {
-        positions,
-        normals: has_normals.then_some(normals),
-        indices,
+    if !has_normals {
+        for (chunk, n) in normals.iter_mut().zip(face_normals(&world, &local)) {
+            write_normal(chunk, &n);
+        }
     }
 }
 
-/// Merge `list` into one draw, its submeshes `across_cores` for a big port
-/// (the hull is most of a ship).
-fn merge(path: &str, list: &[Instance], parallel: bool) -> Merged {
-    let placed = if parallel {
-        across_cores(list, place_submesh)
-    } else {
-        list.iter().map(place_submesh).collect()
-    };
-    let vertices = placed.iter().map(|p| p.positions.len()).sum();
-    let index_count = placed.iter().map(|p| p.indices.len()).sum();
-    let all_normals = placed.iter().all(|p| p.normals.is_some());
-    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(vertices);
-    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(if all_normals { vertices } else { 0 });
-    let mut indices: Vec<u32> = Vec::with_capacity(index_count);
-    for p in &placed {
-        let base = positions.len() as u32;
-        positions.extend_from_slice(&p.positions);
-        if let (true, Some(n)) = (all_normals, &p.normals) {
-            normals.extend_from_slice(n);
-        }
-        indices.extend(p.indices.iter().map(|i| base + i));
+/// Cut the next `len` bytes at `offset` off `rest`, which starts at `cursor`.
+fn carve<'a>(
+    rest: &mut &'a mut [u8],
+    cursor: &mut usize,
+    offset: usize,
+    len: usize,
+) -> &'a mut [u8] {
+    let (_, tail) = std::mem::take(rest).split_at_mut(offset - *cursor);
+    let (piece, tail) = tail.split_at_mut(len);
+    *rest = tail;
+    *cursor = offset + len;
+    piece
+}
+
+/// `n` bytes off the front of `slice`.
+fn front<'a>(slice: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
+    let (head, tail) = std::mem::take(slice).split_at_mut(n);
+    *slice = tail;
+    head
+}
+
+/// Size every port and crease line, ask `target` for exactly that much
+/// memory, and fill it across every core.
+fn assemble<'b>(
+    ports: &[(String, Vec<Instance>)],
+    notes: &mut Vec<String>,
+    target: impl FnOnce(usize) -> &'b mut [u8],
+) -> HoloInfo {
+    let hull_triangles: usize = ports
+        .iter()
+        .find(|(path, _)| path.is_empty())
+        .map_or(0, |(_, list)| {
+            list.iter().map(|i| i.indices().len() / 3).sum()
+        });
+    let with_creases = hull_triangles <= EDGE_LIMIT;
+    if !with_creases {
+        notes.push(format!(
+            "holo: {:.2} M hull triangles, no crease lines",
+            hull_triangles as f64 / 1e6
+        ));
     }
-    drop(placed);
-    if !all_normals {
-        normals = face_normals(&positions, &indices);
+    let flat: Vec<(&Instance, bool)> = ports
+        .iter()
+        .flat_map(|(path, list)| {
+            list.iter()
+                .map(move |i| (i, path.is_empty() && with_creases))
+        })
+        .collect();
+    let surveys = across_cores(&flat, |(inst, creased)| survey(inst, *creased));
+
+    let mut info = HoloInfo::default();
+    let mut size = 0;
+    let mut at = 0;
+    for (path, list) in ports {
+        let these = &surveys[at..at + list.len()];
+        at += list.len();
+        let vertex_count: u32 = these.iter().map(|s| s.vertices).sum();
+        let index_count: usize = list.iter().map(|i| i.indices().len()).sum();
+        let (mut min, mut max) = ([0.0; 3], [0.0; 3]);
+        if vertex_count > 0 {
+            (min, max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for s in these {
+                for k in 0..3 {
+                    min[k] = min[k].min(s.min[k]);
+                    max[k] = max[k].max(s.max[k]);
+                }
+            }
+        }
+        let (centre, scale) = fit(&min, &max);
+        let wide_indices = vertex_count > u32::from(u16::MAX);
+        let positions_offset = align4(size);
+        let normals_offset = align4(positions_offset + vertex_count as usize * 8);
+        let indices_offset = align4(normals_offset + vertex_count as usize * 4);
+        size = indices_offset + index_count * if wide_indices { 4 } else { 2 };
+        info.ports.push(HoloPort {
+            path: path.clone(),
+            centre,
+            scale,
+            min,
+            max,
+            vertex_count,
+            index_count: index_count as u32,
+            positions_offset: positions_offset as u32,
+            normals_offset: normals_offset as u32,
+            indices_offset: indices_offset as u32,
+            wide_indices,
+        });
     }
-    let (min, max, centre, scale) = frame(&positions);
-    let mut normal_bytes = vec![0u8; normals.len() * 4];
-    for (chunk, n) in normal_bytes.as_chunks_mut::<4>().0.iter_mut().zip(&normals) {
-        for k in 0..3 {
-            chunk[k] = ((n[k] * 127.0).round() as i8) as u8;
+
+    let lines: Vec<[f32; 3]> = surveys
+        .iter()
+        .flat_map(|s| s.lines.iter().copied())
+        .collect();
+    let edge_frame = (!lines.is_empty()).then(|| {
+        let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for p in &lines {
+            for k in 0..3 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+        let (centre, scale) = fit(&min, &max);
+        let offset = align4(size);
+        size = offset + lines.len() * 8;
+        info.edges = Some(HoloEdges {
+            centre,
+            scale,
+            vertex_count: lines.len() as u32,
+            offset: offset as u32,
+        });
+        (offset, centre, scale)
+    });
+    info.byte_length = size as u32;
+
+    let out = target(size);
+    assert_eq!(
+        out.len(),
+        size,
+        "target must hand out exactly the size asked"
+    );
+    let mut rest = out;
+    let mut cursor = 0;
+    let mut jobs = Vec::with_capacity(flat.len());
+    let mut at = 0;
+    for (p, (_, list)) in info.ports.iter().zip(ports) {
+        let vertices = p.vertex_count as usize;
+        let width = if p.wide_indices { 4 } else { 2 };
+        let mut positions = carve(
+            &mut rest,
+            &mut cursor,
+            p.positions_offset as usize,
+            vertices * 8,
+        );
+        let mut normals = carve(
+            &mut rest,
+            &mut cursor,
+            p.normals_offset as usize,
+            vertices * 4,
+        );
+        let mut indices = carve(
+            &mut rest,
+            &mut cursor,
+            p.indices_offset as usize,
+            p.index_count as usize * width,
+        );
+        let mut base = 0;
+        for inst in list {
+            let n = surveys[at].vertices;
+            at += 1;
+            jobs.push(Mutex::new(Job {
+                inst,
+                positions: front(&mut positions, n as usize * 8),
+                normals: front(&mut normals, n as usize * 4),
+                indices: front(&mut indices, inst.indices().len() * width),
+                base,
+                wide: p.wide_indices,
+                centre: p.centre,
+                scale: p.scale,
+            }));
+            base += n;
         }
     }
-    let wide_indices = positions.len() > usize::from(u16::MAX);
-    let index_bytes = if wide_indices {
-        let mut out = vec![0u8; indices.len() * 4];
-        for (chunk, i) in out.as_chunks_mut::<4>().0.iter_mut().zip(&indices) {
-            chunk.copy_from_slice(&i.to_le_bytes());
+    if let Some((offset, centre, scale)) = edge_frame {
+        let bytes = carve(&mut rest, &mut cursor, offset, lines.len() * 8);
+        for (chunk, p) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(&lines) {
+            write_position(chunk, p, &centre, scale);
         }
-        out
-    } else {
-        let mut out = vec![0u8; indices.len() * 2];
-        for (chunk, i) in out.as_chunks_mut::<2>().0.iter_mut().zip(&indices) {
-            chunk.copy_from_slice(&(*i as u16).to_le_bytes());
-        }
-        out
-    };
-    Merged {
-        path: path.to_string(),
-        centre,
-        scale,
-        min,
-        max,
-        vertex_count: positions.len() as u32,
-        index_count: indices.len() as u32,
-        positions: write_positions(&positions, &centre, scale),
-        normals: normal_bytes,
-        indices: index_bytes,
-        wide_indices,
     }
+    across_cores(&jobs, |job| fill(&mut job.lock().unwrap()));
+    info
 }
 
 /// Smooth normals from the faces, for geometry that came without.
@@ -891,23 +1011,6 @@ fn triangle_normal(mut points: impl Iterator<Item = [f32; 3]>) -> [f64; 3] {
     }
 }
 
-struct Lines {
-    centre: [f32; 3],
-    scale: f32,
-    vertex_count: u32,
-    bytes: Vec<u8>,
-}
-
-fn quantise_lines(points: &[[f32; 3]]) -> Lines {
-    let (_, _, centre, scale) = frame(points);
-    Lines {
-        centre,
-        scale,
-        vertex_count: points.len() as u32,
-        bytes: write_positions(points, &centre, scale),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,17 +1089,64 @@ mod tests {
             [0.0, 4.0, 0.0],
             [99.0, 99.0, 99.0],
         ];
-        let m = merge("gun", &[instance(positions, vec![0, 1, 2], at)], false);
+        let ports = vec![(
+            "gun".to_string(),
+            vec![instance(positions, vec![0, 1, 2], at)],
+        )];
+        let mut buffer = Vec::new();
+        let target = &mut buffer;
+        let info = assemble(&ports, &mut Vec::new(), move |size| {
+            target.resize(size, 0);
+            target.as_mut_slice()
+        });
+        let m = &info.ports[0];
         assert_eq!(m.vertex_count, 3);
         assert!(!m.wide_indices);
         assert_eq!(m.min, [10.0, 0.0, 0.0]);
         assert_eq!(m.max, [12.0, 4.0, 0.0]);
         let decode = |v: usize, k: usize| {
-            let at = v * 8 + k * 2;
-            let q = i16::from_le_bytes([m.positions[at], m.positions[at + 1]]);
+            let at = m.positions_offset as usize + v * 8 + k * 2;
+            let q = i16::from_le_bytes([buffer[at], buffer[at + 1]]);
             m.centre[k] + f32::from(q) / 32767.0 * m.scale
         };
         assert!((decode(2, 1) - 4.0).abs() < 1e-3);
         assert!((decode(1, 0) - 12.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn two_submeshes_index_into_one_merged_vertex_list() {
+        let a = instance(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            IDENTITY,
+        );
+        let b = instance(
+            vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+            vec![2, 1, 0],
+            IDENTITY,
+        );
+        let ports = vec![("gun".to_string(), vec![a, b])];
+        let mut buffer = Vec::new();
+        let target = &mut buffer;
+        let info = assemble(&ports, &mut Vec::new(), move |size| {
+            target.resize(size, 0);
+            target.as_mut_slice()
+        });
+        let m = &info.ports[0];
+        assert_eq!((m.vertex_count, m.index_count), (6, 6));
+        let index = |i: usize| {
+            let at = m.indices_offset as usize + i * 2;
+            u16::from_le_bytes([buffer[at], buffer[at + 1]])
+        };
+        assert_eq!((0..6).map(index).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_scattered_submesh_dedupes_like_a_compact_one() {
+        let mut slots = Slots::new(&[0, 1_000_000]);
+        assert!(matches!(slots, Slots::Scattered(_)));
+        assert_eq!(slots.slot(1_000_000, 0), (0, true));
+        assert_eq!(slots.slot(0, 1), (1, true));
+        assert_eq!(slots.slot(1_000_000, 2), (0, false));
     }
 }

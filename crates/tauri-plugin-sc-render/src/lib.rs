@@ -159,85 +159,212 @@ async fn load_holo<R: Runtime>(
     shared: Option<bool>,
 ) -> Result<HoloInfo, String> {
     let assets = state.assets()?;
-    let holo = tauri::async_runtime::spawn_blocking(move || assets.holo(&root))
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut info = holo.info;
-    info.path = format!("holo:{}", state.holos.fetch_add(1, Ordering::Relaxed));
-    let buffer = Arc::new(holo.buffer);
-    if shared.unwrap_or(false) {
-        let (id, bytes) = (info.path.clone(), buffer.clone());
-        let posted = tauri::async_runtime::spawn_blocking(move || post_shared(&webview, id, bytes))
-            .await
-            .map_err(|e| e.to_string())?;
-        match posted {
-            Ok(()) => {
-                info.shared = true;
-                return Ok(info);
-            }
-            Err(e) => info.notes.push(format!(
-                "holo: shared buffer failed ({e}), using the scheme"
-            )),
-        }
+    let id = format!("holo:{}", state.holos.fetch_add(1, Ordering::Relaxed));
+    let tag = id.clone();
+    let shared = shared.unwrap_or(false);
+    let (mut info, served) = tauri::async_runtime::spawn_blocking(move || {
+        build_holo(&webview, &assets, &root, &tag, shared)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    info.path = id;
+    if let Some(buffer) = served {
+        state.store(info.path.clone(), buffer);
     }
-    state.store(
-        info.path.clone(),
-        Arc::try_unwrap(buffer).unwrap_or_else(|b| b.as_ref().clone()),
-    );
     Ok(info)
 }
 
-/// Copy `bytes` into a WebView2 shared buffer and post it to the page, tagged
-/// `{ "scRender": id }`. The page releases it with `chrome.webview.releaseBuffer`.
-#[cfg(windows)]
-fn post_shared<R: Runtime>(
+/// Build the hologram into a shared buffer when asked and possible. Returns
+/// the bytes to serve over the scheme when it did not end up shared.
+fn build_holo<R: Runtime>(
     webview: &tauri::Webview<R>,
-    id: String,
-    bytes: Arc<Vec<u8>>,
-) -> Result<(), String> {
+    assets: &Assets,
+    root: &ScenePart,
+    id: &str,
+    shared: bool,
+) -> (HoloInfo, Option<Vec<u8>>) {
+    let mut fallback = Vec::new();
+    let mut memory = None;
+    let mut failure = None;
+    let (out, held, failed) = (&mut fallback, &mut memory, &mut failure);
+    let mut info = assets.holo_into(root, move |size| {
+        if shared {
+            match shared::Memory::new(webview, size) {
+                Ok(m) => {
+                    // SAFETY: filled before `post` below hands the mapping on.
+                    let bytes = unsafe { m.bytes() };
+                    *held = Some(m);
+                    return bytes;
+                }
+                Err(e) => *failed = Some(e),
+            }
+        }
+        out.resize(size, 0);
+        out.as_mut_slice()
+    });
+    if let Some(m) = memory {
+        match m.post(webview, id) {
+            Ok(()) => {
+                info.shared = true;
+                return (info, None);
+            }
+            Err((e, bytes)) => {
+                info.notes.push(format!(
+                    "holo: shared buffer failed ({e}), using the scheme"
+                ));
+                return (info, Some(bytes));
+            }
+        }
+    }
+    if let Some(e) = failure {
+        info.notes.push(format!(
+            "holo: shared buffer failed ({e}), using the scheme"
+        ));
+    }
+    (info, Some(fallback))
+}
+
+/// WebView2 shared buffers: memory the page maps, so a big hologram never
+/// crosses the custom scheme. The page releases it with
+/// `chrome.webview.releaseBuffer`.
+#[cfg(windows)]
+mod shared {
+    use tauri::Runtime;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_WRITE, ICoreWebView2_2, ICoreWebView2_17,
-        ICoreWebView2Environment12,
+        ICoreWebView2Environment12, ICoreWebView2SharedBuffer,
     };
     use windows_core::{HSTRING, Interface, PCWSTR};
 
-    let (done, result) = std::sync::mpsc::channel();
-    webview
-        .with_webview(move |w| {
-            // SAFETY: on the webview's thread, as these interfaces require;
-            // `target` is the mapping of a buffer of exactly `bytes.len()`.
-            let posted = (|| unsafe {
-                let core = w.controller().CoreWebView2()?;
-                let environment = core
-                    .cast::<ICoreWebView2_2>()?
-                    .Environment()?
-                    .cast::<ICoreWebView2Environment12>()?;
-                let buffer = environment.CreateSharedBuffer(bytes.len() as u64)?;
-                let mut target = std::ptr::null_mut();
-                buffer.Buffer(&mut target)?;
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
-                let tag = HSTRING::from(format!("{{\"scRender\":\"{id}\"}}"));
-                core.cast::<ICoreWebView2_17>()?.PostSharedBufferToScript(
-                    &buffer,
-                    COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_WRITE,
-                    PCWSTR(tag.as_ptr()),
-                )?;
-                // The page holds its own view; ours can go.
-                buffer.Close()
-            })();
-            let _ = done.send(posted.map_err(|e: windows_core::Error| e.to_string()));
-        })
-        .map_err(|e| e.to_string())?;
-    result.recv().map_err(|e| e.to_string())?
+    pub struct Memory {
+        buffer: ICoreWebView2SharedBuffer,
+        start: *mut u8,
+        len: usize,
+    }
+
+    // SAFETY: moved between threads only to get back to the webview's thread;
+    // the COM object is called and released there. Only the mapping, which is
+    // plain process memory, is touched elsewhere.
+    unsafe impl Send for Memory {}
+
+    impl Memory {
+        /// A shared buffer of `len` bytes, made on the webview's thread.
+        pub fn new<R: Runtime>(webview: &tauri::Webview<R>, len: usize) -> Result<Self, String> {
+            let (done, result) = std::sync::mpsc::channel();
+            webview
+                .with_webview(move |w| {
+                    // SAFETY: on the webview's thread, as these interfaces require.
+                    let made = (|| unsafe {
+                        let environment = w
+                            .controller()
+                            .CoreWebView2()?
+                            .cast::<ICoreWebView2_2>()?
+                            .Environment()?
+                            .cast::<ICoreWebView2Environment12>()?;
+                        let buffer = environment.CreateSharedBuffer(len as u64)?;
+                        let mut start = std::ptr::null_mut();
+                        buffer.Buffer(&mut start)?;
+                        Ok(Memory { buffer, start, len })
+                    })();
+                    let _ = done.send(made.map_err(|e: windows_core::Error| e.to_string()));
+                })
+                .map_err(|e| e.to_string())?;
+            result.recv().map_err(|e| e.to_string())?
+        }
+
+        /// The mapped memory.
+        ///
+        /// # Safety
+        ///
+        /// The slice must not be used after [`post`](Self::post).
+        pub unsafe fn bytes<'a>(&self) -> &'a mut [u8] {
+            // SAFETY: the mapping is `len` bytes and lives until `post`.
+            unsafe { std::slice::from_raw_parts_mut(self.start, self.len) }
+        }
+
+        /// Post it to the page, tagged `{ "scRender": id }`, and let go of
+        /// our side. On failure, a copy of the bytes for the scheme.
+        pub fn post<R: Runtime>(
+            self,
+            webview: &tauri::Webview<R>,
+            id: &str,
+        ) -> Result<(), (String, Vec<u8>)> {
+            let tag = HSTRING::from(format!("{{\"scRender\":\"{id}\"}}"));
+            let (start, len) = (self.start as usize, self.len);
+            // SAFETY: the mapping is still ours, `post` has not run.
+            let copy =
+                move || unsafe { std::slice::from_raw_parts(start as *const u8, len).to_vec() };
+            let (done, result) = std::sync::mpsc::channel();
+            let memory = self;
+            let tag = SendTag(tag);
+            let sent = webview.with_webview(move |w| {
+                let (memory, tag) = (memory, tag);
+                // SAFETY: on the webview's thread, as these interfaces require.
+                let posted = (|| unsafe {
+                    w.controller()
+                        .CoreWebView2()?
+                        .cast::<ICoreWebView2_17>()?
+                        .PostSharedBufferToScript(
+                            &memory.buffer,
+                            COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_WRITE,
+                            PCWSTR(tag.0.as_ptr()),
+                        )
+                })();
+                match posted {
+                    Ok(()) => {
+                        // The page holds its own view; ours can go.
+                        // SAFETY: as above.
+                        let _ = done.send(
+                            unsafe { memory.buffer.Close() }
+                                .map_err(|e| (e.to_string(), Vec::new())),
+                        );
+                    }
+                    Err(e) => {
+                        let bytes = copy();
+                        // SAFETY: as above.
+                        let _ = unsafe { memory.buffer.Close() };
+                        let _ = done.send(Err((e.to_string(), bytes)));
+                    }
+                }
+            });
+            sent.map_err(|e| (e.to_string(), Vec::new()))?;
+            result.recv().map_err(|e| (e.to_string(), Vec::new()))?
+        }
+    }
+
+    /// The tag, moved to the webview's thread.
+    struct SendTag(HSTRING);
+    // SAFETY: an HSTRING is an immutable, reference-counted string.
+    unsafe impl Send for SendTag {}
 }
 
 #[cfg(not(windows))]
-fn post_shared<R: Runtime>(
-    _webview: &tauri::Webview<R>,
-    _id: String,
-    _bytes: Arc<Vec<u8>>,
-) -> Result<(), String> {
-    Err("only WebView2 has shared buffers".into())
+mod shared {
+    use tauri::Runtime;
+
+    /// Only WebView2 has shared buffers; `new` always fails here.
+    pub struct Memory;
+
+    impl Memory {
+        pub fn new<R: Runtime>(_: &tauri::Webview<R>, _: usize) -> Result<Self, String> {
+            Err("only WebView2 has shared buffers".into())
+        }
+
+        /// # Safety
+        ///
+        /// Never called: no `Memory` is ever made here.
+        pub unsafe fn bytes<'a>(&self) -> &'a mut [u8] {
+            unreachable!("no shared memory off Windows")
+        }
+
+        pub fn post<R: Runtime>(
+            self,
+            _: &tauri::Webview<R>,
+            _: &str,
+        ) -> Result<(), (String, Vec<u8>)> {
+            unreachable!("no shared memory off Windows")
+        }
+    }
 }
 
 /// A `.chr` skeleton's bones.

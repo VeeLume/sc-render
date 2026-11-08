@@ -63,6 +63,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  parsed as a JSON value in {:?}", t.elapsed());
 
     let ships = catalog.ships();
+    if std::env::args().nth(1).as_deref() == Some("--repeat") {
+        for name in std::env::args().skip(2) {
+            let needle = name.to_lowercase();
+            let Some(hit) = ships
+                .iter()
+                .find(|s| s.label.to_lowercase().contains(&needle))
+            else {
+                continue;
+            };
+            let scene = catalog.ship_scene(&assets, &hit.guid)?;
+            let scene = ShipScene::new(&scene, hit.label.clone(), |g| g.to_string());
+            let _ = assets.holo(&scene.root);
+            let mut runs = Vec::new();
+            for _ in 0..7 {
+                let t = Instant::now();
+                let holo = assets.holo(&scene.root);
+                runs.push((
+                    t.elapsed().as_millis(),
+                    holo.info.notes.last().cloned().unwrap_or_default(),
+                ));
+            }
+            runs.sort();
+            let (ms, note) = &runs[3];
+            println!("{name:10} median of 7: {ms} ms ({note})");
+        }
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--all") {
         let mut rows = Vec::new();
         for s in &ships {

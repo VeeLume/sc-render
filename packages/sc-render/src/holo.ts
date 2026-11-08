@@ -56,6 +56,11 @@ export interface HoloOptions {
 	base?: number;
 	/** Extra brightness at the rim. */
 	rim?: number;
+	/**
+	 * A solid surface drawn after the see-through hull, so the hull's layers
+	 * do not paint over it (give the mesh a higher `renderOrder`).
+	 */
+	overHull?: boolean;
 	planes: THREE.Plane[];
 }
 
@@ -65,13 +70,15 @@ export function holoMaterial(colour: THREE.ColorRepresentation, o: HoloOptions):
 	return new THREE.ShaderMaterial({
 		uniforms: {
 			uColor: { value: new THREE.Color(colour) },
-			uOpacity: { value: solid ? 2 : o.opacity },
+			// Solid: enough that alpha is 1 even face-on (0.45 x 3).
+			uOpacity: { value: solid ? 3 : o.opacity },
 			uBase: { value: o.base ?? 0.55 },
 			uRim: { value: o.rim ?? 0.9 }
 		},
 		vertexShader,
 		fragmentShader,
-		transparent: !solid,
+		// In three's transparent queue, the only way to come after the hull.
+		transparent: !solid || !!o.overHull,
 		depthWrite: solid,
 		side: THREE.DoubleSide,
 		clipping: true,

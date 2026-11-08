@@ -165,6 +165,7 @@ export class ShipView {
 	private detail: DetailModel | null = null;
 	private detailBuilding: Promise<void> | null = null;
 	private lit = false;
+	private warmth: { geometry: THREE.BufferGeometry; lines: THREE.Material } | null = null;
 
 	private readonly interior = new THREE.Group();
 	private batches: InteriorBatch[] = [];
@@ -218,6 +219,7 @@ export class ShipView {
 		const log: string[] = [];
 		const generation = ++this.generation;
 		for (const n of ship.notes) log.push(`note: ${n}`);
+		if (this.mode === 'holo') this.warmShaders();
 		const holo = this.mode === 'holo' ? await this.buildHolo(ship, log) : null;
 		const detail = this.mode === 'holo' ? null : await this.buildDetail(ship, log);
 		if (generation !== this.generation || this.disposed) {
@@ -237,6 +239,7 @@ export class ShipView {
 		this.buildGrid();
 		this.applyMode();
 		this.frame();
+		this.coolShaders();
 		await this.ensureInterior(ship, log, generation);
 		if (generation !== this.generation) return log;
 		this.applyMode();
@@ -297,6 +300,20 @@ export class ShipView {
 		this.portColours = new Map([...colours].map(([p, c]) => [p.toLowerCase(), c]));
 		this.colourPorts();
 		this.render();
+	}
+
+	/**
+	 * Where a port and everything mounted below it sit, in the ship frame, by
+	 * port path as for `highlight`; several paths give the box around them
+	 * all. `null` when none is drawn. Holo mode.
+	 */
+	portBounds(path: string | string[]): THREE.Box3 | null {
+		const wanted = (Array.isArray(path) ? path : [path]).map((p) => p.toLowerCase());
+		const box = new THREE.Box3();
+		for (const p of this.holo?.ports ?? []) {
+			if (wanted.some((w) => p.path === w || p.path.startsWith(`${w}/`))) box.union(p.bounds);
+		}
+		return box.isEmpty() ? null : box;
 	}
 
 	/**
@@ -665,11 +682,53 @@ export class ShipView {
 		const hull = this.material('holo-hull', () => holoMaterial(HOLO_HULL, { opacity: this.holoOpacity, planes }));
 		const solid = (colour: THREE.ColorRepresentation) =>
 			this.material(`holo-solid-${new THREE.Color(colour).getHex()}`, () => holoMaterial(colour, { opacity: 1, base: 0.7, rim: 0.6, planes }));
+		const over = (colour: THREE.ColorRepresentation) =>
+			this.material(`holo-over-${new THREE.Color(colour).getHex()}`, () =>
+				holoMaterial(colour, { opacity: 1, base: 0.7, rim: 0.6, overHull: true, planes })
+			);
 		for (const { path, mesh } of this.holo.ports) {
 			const lit = this.highlights.some((h) => path === h || path.startsWith(`${h}/`));
-			const colour = lit ? this.highlightColour : this.portColours.get(path);
-			mesh.material = colour !== undefined ? solid(colour) : hull;
+			const colour = this.portColours.get(path);
+			// Lit parts come after the hull: its layers would paint over them.
+			mesh.material = lit ? over(this.highlightColour) : colour !== undefined ? solid(colour) : hull;
+			mesh.renderOrder = lit ? 2 : 0;
 		}
+	}
+
+	/**
+	 * Compile the hologram's programs while the geometry is still on its way,
+	 * instead of after it: draws one empty triangle. The programs stay cached
+	 * for the real materials until `coolShaders`.
+	 */
+	private warmShaders() {
+		if (this.warmth) return;
+		const g = new THREE.BufferGeometry();
+		g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(12), 4, true));
+		g.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(12), 4, true));
+		g.setIndex([0, 1, 2]);
+		const planes = this.planes;
+		const hull = this.material('holo-hull', () => holoMaterial(HOLO_HULL, { opacity: this.holoOpacity, planes }));
+		const lines = new THREE.LineBasicMaterial({
+			color: HOLO_EDGE,
+			transparent: true,
+			depthWrite: false,
+			blending: THREE.AdditiveBlending,
+			clippingPlanes: planes,
+			toneMapped: false
+		});
+		const scene = new THREE.Scene();
+		for (const o of [new THREE.Mesh(g, hull), new THREE.LineSegments(g, lines)]) {
+			o.frustumCulled = false;
+			scene.add(o);
+		}
+		this.renderer.render(scene, this.camera);
+		this.warmth = { geometry: g, lines };
+	}
+
+	/** Let go of `warmShaders`' stand-ins, once the real materials use the programs. */
+	private coolShaders() {
+		this.warmth?.geometry.dispose();
+		this.warmth?.lines.dispose();
 	}
 
 	/** The interior shows when wanted and visible: through an X-ray hull or a slice. */
