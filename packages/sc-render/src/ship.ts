@@ -670,8 +670,12 @@ export class ShipView {
 		const size = this.bounds.getSize(new THREE.Vector3());
 		// A box's mean projected area is a quarter of its surface.
 		const area = Math.max(1e-3, (size.x * size.y + size.y * size.z + size.z * size.x) / 2);
+		// Closer than the framed view, the budget opens up fast: a full panel
+		// outline beats an even scatter of its pieces, and there is room for it.
+		const framed = this.canvas.clientHeight / (1.6 * this.radius);
+		const closeness = Math.max(1, pixelsPerMetre / framed) ** 2;
 		const prefix = (ink: number) => {
-			const budget = ink * area * pixelsPerMetre;
+			const budget = ink * closeness * area * pixelsPerMetre;
 			const levels = this.holo?.levels ?? [];
 			let count = levels[0]?.vertex_count ?? 0;
 			for (const l of levels) if (l.length <= budget) count = l.vertex_count;
