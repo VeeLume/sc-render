@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import type { BoneInfo, ModelInfo, PartLook, SceneItem, ScenePaletteEntry, ScenePart, SubMaterialInfo } from './types';
 import { Library, type RenderSource } from './library';
-import { buildMaterial, isDrawn } from './materials';
+import { buildMaterial } from './materials';
 /** A tint palette: entries A, B, C. */
 export type Palette = ScenePaletteEntry[];
 
@@ -181,7 +181,7 @@ export class Cell {
 		const character = !!fx.root.skeleton?.toLowerCase().endsWith('.chr') && fx.root.pieces.length === 0;
 		await rig.init(pose ?? character);
 		for (const n of rig.notes) log.push(`pose: ${n}`);
-		const model = await buildItem(this.lib, fx.root, log, 0, rig, looks, build(false));
+		const model = await buildItem(this.lib, fx.root, log, 0, rig, looks, new Map());
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -602,28 +602,18 @@ function standingPose(
 	return notes;
 }
 
-/** One assembly's settings and what it shares. */
-interface Build {
-	/** Meshes get {@link GEOMETRY_ONLY} and no texture is read. */
-	geometryOnly: boolean;
-	/** Files already read, so a model used many times crosses the bridge once. */
-	models: Map<string, Promise<{ info: ModelInfo; buffer: ArrayBuffer }>>;
-}
-
-const build = (geometryOnly: boolean): Build => ({ geometryOnly, models: new Map() });
-
-/** What a geometry-only assembly's drawn surfaces carry until the view replaces it. */
-const GEOMETRY_ONLY = new THREE.MeshBasicMaterial();
+/** Files already read in one assembly, so a model used many times crosses the bridge once. */
+type Models = Map<string, Promise<{ info: ModelInfo; buffer: ArrayBuffer }>>;
 
 /**
  * A scene tree drawn unposed, in its root's own frame (a ship and its
- * loadout), with a cell's assembly and, unless `geometryOnly`, its materials.
- * An attachment's holder group carries `userData.port`.
+ * loadout), with a cell's assembly and materials. An attachment's holder
+ * group carries `userData.port`.
  */
-export async function buildScene(lib: Library, root: ScenePart, log: string[], geometryOnly = false): Promise<THREE.Group> {
+export async function buildScene(lib: Library, root: ScenePart, log: string[]): Promise<THREE.Group> {
 	const rig = new CharacterRig(lib, root);
 	await rig.init(false);
-	return buildItem(lib, root, log, 0, rig, new Map(), build(geometryOnly));
+	return buildItem(lib, root, log, 0, rig, new Map(), new Map());
 }
 
 /**
@@ -639,17 +629,17 @@ async function buildItem(
 	depth: number,
 	character: CharacterRig,
 	looks: Looks,
-	assembly: Build
+	models: Models
 ): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
 	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
 	for (const piece of item.pieces) {
 		const key = piece.geometry.toLowerCase();
-		let loading = assembly.models.get(key);
+		let loading = models.get(key);
 		if (!loading) {
 			loading = lib.model(piece.geometry);
-			assembly.models.set(key, loading);
+			models.set(key, loading);
 		}
 		// One unreadable file (a reference to a missing one) must not blank the
 		// whole scene.
@@ -669,7 +659,7 @@ async function buildItem(
 			character.posing && info.joints_offset != null && piece.geometry.toLowerCase().endsWith('.skin')
 				? { bones: await character.skinBones(piece.geometry), rig: character }
 				: undefined;
-		group.add(await buildModel(lib, info, buffer, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin, assembly.geometryOnly));
+		group.add(await buildModel(lib, info, buffer, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin));
 	}
 	if (!item.attachments.length) return group;
 	const bones = item.skeleton ? await lib.skeleton(item.skeleton) : [];
@@ -705,7 +695,7 @@ async function buildItem(
 		}
 		const on = name ? `${at.bone} (${bone || posed ? 'bone' : 'node'})` : 'its skeleton (skinned)';
 		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
-		const child = await buildItem(lib, at.part, log, depth + 1, character, looks, assembly);
+		const child = await buildItem(lib, at.part, log, depth + 1, character, looks, models);
 		// The port's offset, then the child moved so its own helper (not its
 		// origin) sits on the port.
 		const holder = new THREE.Group();
@@ -780,8 +770,7 @@ async function buildModel(
 	log: string[],
 	palette?: Palette,
 	look?: PartLook,
-	skin?: SkinBinding,
-	geometryOnly = false
+	skin?: SkinBinding
 ) {
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
@@ -837,12 +826,7 @@ async function buildModel(
 	for (const sm of info.submeshes) {
 		const sub = subs[sm.material];
 		if (!materialCache.has(sm.material)) {
-			const made = !sub
-				? Promise.resolve(null)
-				: geometryOnly
-					? Promise.resolve(isDrawn(sub) ? GEOMETRY_ONLY : null)
-					: buildMaterial(lib, sub, palette, look);
-			materialCache.set(sm.material, made);
+			materialCache.set(sm.material, sub ? buildMaterial(lib, sub, palette, look) : Promise.resolve(null));
 		}
 		const material = await materialCache.get(sm.material)!;
 		if (!material) {

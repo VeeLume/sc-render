@@ -4509,6 +4509,8 @@ dependencies = [
  "tauri",
  "tauri-plugin",
  "urlencoding",
+ "webview2-com",
+ "windows-core",
 ]
 
 [[package]]

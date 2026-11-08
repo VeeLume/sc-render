@@ -7,8 +7,13 @@ links = "tauri-plugin-sc-render"
 
 [dependencies]
 sc-render = { workspace = true }
-tauri = { version = "2", features = [] }
+# 2.12: `with_webview` hands out the webview2-com 0.39 types used below.
+tauri = { version = "2.12", features = [] }
 urlencoding = "2"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

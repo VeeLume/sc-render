@@ -3,7 +3,7 @@
 // `Library` turns its answers into three.js objects once and shares them
 // between every cell drawing from the same source.
 import * as THREE from 'three';
-import type { BoneInfo, MaterialInfo, ModelInfo } from './types';
+import type { BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart } from './types';
 
 /** Decoded pixels: RGBA8 levels, largest first, each half the one before. */
 export interface TextureData {
@@ -44,6 +44,12 @@ export interface RenderSource {
 	texture(path: string, kind: DecodeKind, max: number): Promise<TextureData>;
 	/** The LayerBlend hue-shift lookup table (8 x 8 x 16). */
 	hueLut(): Promise<VolumeData>;
+	/**
+	 * A scene's hologram, built in one go (layout: `HoloInfo`). `release`,
+	 * when given, is to be called once the buffer is no longer read; reading
+	 * it afterwards throws.
+	 */
+	holo(root: ScenePart): Promise<{ info: HoloInfo; buffer: ArrayBuffer; release?: () => void }>;
 }
 
 /**

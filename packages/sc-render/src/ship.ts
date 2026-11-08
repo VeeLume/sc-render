@@ -4,8 +4,9 @@
 // frame (x right, y forward, z up, metres); the model sits there
 // untransformed. A frame is drawn only when something changed.
 //
-// The holo reads no textures and merges each port's meshes into one draw,
-// so a capital ship stays cheap. The materials are built on first use.
+// The holo comes from the source in one go, built across every core
+// (`Assets::holo`): no textures, one draw per port. The materials are built
+// on first use.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -34,9 +35,6 @@ export interface ShipViewOptions {
 
 const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
 
-/** Above this many hull triangles the holo skips its crease lines. */
-const EDGE_LIMIT = 1_500_000;
-
 /**
  * Crease line opacity per pixel per metre at the framed view. The lines add
  * up, so a capital ship (a tenth of a fighter's pixels per metre) goes white
@@ -49,16 +47,6 @@ const EDGE_OPACITY = [0.04, 0.45] as const;
 /** A distinct colour per damage part (golden-angle hues). */
 function partColour(i: number): THREE.Color {
 	return new THREE.Color().setHSL((i * 0.618034) % 1, 0.55, 0.55);
-}
-
-/** Lets the page breathe during long synchronous work. */
-function breather(): () => Promise<void> {
-	let last = performance.now();
-	return async () => {
-		if (performance.now() - last < 12) return;
-		await new Promise((r) => setTimeout(r));
-		last = performance.now();
-	};
 }
 
 /** Run `job` over `items`, `limit` at a time. */
@@ -89,67 +77,12 @@ function byPort(root: THREE.Object3D): Map<string, THREE.Mesh[]> {
 	return out;
 }
 
-/**
- * `meshes` as one geometry in world space: only the vertices they index
- * (every submesh of a file shares the file's whole vertex buffer), positions
- * and normals only.
- */
-function merge(meshes: THREE.Mesh[]): THREE.BufferGeometry {
-	let largest = 0;
-	for (const m of meshes) largest = Math.max(largest, m.geometry.getAttribute('position').count);
-	const slot = new Int32Array(largest);
-	const seen = new Uint32Array(largest);
-	let vertices = 0;
-	let indices = 0;
-	let stamp = 0;
-	for (const m of meshes) {
-		const idx = m.geometry.getIndex()!;
-		stamp++;
-		for (let i = 0; i < idx.count; i++) {
-			const v = idx.getX(i);
-			if (seen[v] !== stamp) {
-				seen[v] = stamp;
-				vertices++;
-			}
-		}
-		indices += idx.count;
-	}
-	const positions = new Float32Array(vertices * 3);
-	const normals = new Float32Array(vertices * 3);
-	const index = new Uint32Array(indices);
-	const p = new THREE.Vector3();
-	const n = new THREE.Vector3();
-	const normalMatrix = new THREE.Matrix3();
-	let written = 0;
-	let at = 0;
-	let allNormals = true;
-	for (const m of meshes) {
-		const idx = m.geometry.getIndex()!;
-		const pos = m.geometry.getAttribute('position');
-		const nor = m.geometry.getAttribute('normal');
-		if (!nor) allNormals = false;
-		normalMatrix.getNormalMatrix(m.matrixWorld);
-		stamp++;
-		for (let i = 0; i < idx.count; i++) {
-			const v = idx.getX(i);
-			if (seen[v] !== stamp) {
-				seen[v] = stamp;
-				slot[v] = written;
-				p.fromBufferAttribute(pos, v).applyMatrix4(m.matrixWorld).toArray(positions, written * 3);
-				if (nor) n.fromBufferAttribute(nor, v).applyMatrix3(normalMatrix).normalize().toArray(normals, written * 3);
-				written++;
-			}
-			index[at++] = slot[v];
-		}
-	}
-	const g = new THREE.BufferGeometry();
-	g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-	g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-	g.setIndex(new THREE.BufferAttribute(index, 1));
-	if (!allNormals) g.computeVertexNormals();
-	g.computeBoundingBox();
-	g.computeBoundingSphere();
-	return g;
+/** Sit a mesh whose positions are quantised to -1..1 where `centre + xyz * scale` says. */
+function placeDecoded(o: THREE.Object3D, centre: THREE.Vector3, scale: number) {
+	o.position.copy(centre);
+	o.scale.setScalar(scale);
+	o.updateMatrix();
+	o.matrixAutoUpdate = false;
 }
 
 /** Free `root`'s geometries and materials on the GPU (textures stay the Library's). */
@@ -167,6 +100,8 @@ function disposeTree(root: THREE.Object3D) {
 interface PortDraw {
 	path: string;
 	mesh: THREE.Mesh;
+	/** Ship frame. */
+	bounds: THREE.Box3;
 }
 
 /** The merged holo model. */
@@ -176,6 +111,8 @@ interface HoloModel {
 	ports: PortDraw[];
 	/** Hull crease lines, when not skipped. */
 	edges: THREE.LineSegments | null;
+	/** Gives back the buffer the geometry reads from. */
+	release?: () => void;
 }
 
 interface HullMesh {
@@ -455,65 +392,49 @@ export class ShipView {
 	}
 
 	private async buildHolo(ship: ShipScene, log: string[]): Promise<HoloModel> {
-		const source = await buildScene(this.lib, ship.root, log, true);
-		const groups = byPort(source);
-		const breathe = breather();
+		const { info, buffer, release } = await this.lib.source.holo(ship.root);
+		log.push(...info.notes);
 		const root = new THREE.Group();
-		const hull = groups.get('') ?? [];
-		const hullTriangles = hull.reduce((n, m) => n + m.geometry.getIndex()!.count / 3, 0);
-		const edges = hullTriangles <= EDGE_LIMIT ? await this.buildEdges(hull, breathe) : null;
-		if (edges) root.add(edges);
-		else if (hull.length) log.push(`holo: ${(hullTriangles / 1e6).toFixed(2)} M hull triangles, no crease lines`);
-		const ports: PortDraw[] = [];
-		for (const path of [...groups.keys()].sort()) {
-			const mesh = new THREE.Mesh(merge(groups.get(path)!));
-			mesh.matrixAutoUpdate = false;
+		const ports = info.ports.map((p): PortDraw => {
+			const g = new THREE.BufferGeometry();
+			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, p.positions_offset, p.vertex_count * 4), 4, true));
+			g.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(buffer, p.normals_offset, p.vertex_count * 4), 4, true));
+			const index = p.wide_indices ? new Uint32Array(buffer, p.indices_offset, p.index_count) : new Uint16Array(buffer, p.indices_offset, p.index_count);
+			g.setIndex(new THREE.BufferAttribute(index, 1));
+			const bounds = new THREE.Box3(new THREE.Vector3(...p.min), new THREE.Vector3(...p.max));
+			const centre = new THREE.Vector3(...p.centre);
+			g.boundingBox = bounds.clone().translate(centre.clone().negate());
+			g.boundingBox.min.divideScalar(p.scale);
+			g.boundingBox.max.divideScalar(p.scale);
+			g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
+			const mesh = new THREE.Mesh(g);
+			placeDecoded(mesh, centre, p.scale);
 			root.add(mesh);
-			ports.push({ path, mesh });
-			await breathe();
+			return { path: p.path, mesh, bounds };
+		});
+		let edges: THREE.LineSegments | null = null;
+		if (info.edges) {
+			const e = info.edges;
+			const g = new THREE.BufferGeometry();
+			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, e.offset, e.vertex_count * 4), 4, true));
+			edges = new THREE.LineSegments(
+				g,
+				new THREE.LineBasicMaterial({
+					color: HOLO_EDGE,
+					transparent: true,
+					opacity: 0.45,
+					depthWrite: false,
+					blending: THREE.AdditiveBlending,
+					clippingPlanes: this.planes,
+					toneMapped: false
+				})
+			);
+			// The lines span the hull, so they are never culled.
+			edges.frustumCulled = false;
+			placeDecoded(edges, new THREE.Vector3(...e.centre), e.scale);
+			root.add(edges);
 		}
-		log.push(`holo: ${ports.length} draws from ${[...groups.values()].reduce((n, l) => n + l.length, 0)} meshes`);
-		return { root, ports, edges };
-	}
-
-	/** The hull's crease lines (angle over 30 degrees) as one draw, world space. */
-	private async buildEdges(hull: THREE.Mesh[], breathe: () => Promise<void>): Promise<THREE.LineSegments | null> {
-		const parts: Float32Array[] = [];
-		let length = 0;
-		const v = new THREE.Vector3();
-		for (const mesh of hull) {
-			const edges = new THREE.EdgesGeometry(mesh.geometry, 30);
-			const pos = edges.getAttribute('position');
-			const out = new Float32Array(pos.count * 3);
-			for (let i = 0; i < pos.count; i++) v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).toArray(out, i * 3);
-			edges.dispose();
-			parts.push(out);
-			length += out.length;
-			await breathe();
-		}
-		if (!length) return null;
-		const all = new Float32Array(length);
-		let at = 0;
-		for (const p of parts) {
-			all.set(p, at);
-			at += p.length;
-		}
-		const g = new THREE.BufferGeometry();
-		g.setAttribute('position', new THREE.BufferAttribute(all, 3));
-		const lines = new THREE.LineSegments(
-			g,
-			new THREE.LineBasicMaterial({
-				color: HOLO_EDGE,
-				transparent: true,
-				opacity: 0.45,
-				depthWrite: false,
-				blending: THREE.AdditiveBlending,
-				clippingPlanes: this.planes,
-				toneMapped: false
-			})
-		);
-		lines.matrixAutoUpdate = false;
-		return lines;
+		return { root, ports, edges, release };
 	}
 
 	private async buildDetail(ship: ShipScene, log: string[]): Promise<DetailModel> {
@@ -589,6 +510,7 @@ export class ShipView {
 
 	private discardHolo(holo: HoloModel) {
 		disposeTree(holo.root);
+		holo.release?.();
 	}
 
 	/** Remove and free everything of the last ship. */
@@ -601,6 +523,7 @@ export class ShipView {
 		if (this.holo) {
 			for (const p of this.holo.ports) p.mesh.geometry.dispose();
 			if (this.holo.edges) disposeTree(this.holo.edges);
+			this.holo.release?.();
 		}
 		if (this.detail) {
 			// Back on their own materials, so those are freed too.
@@ -626,7 +549,7 @@ export class ShipView {
 		const box = new THREE.Box3();
 		if (this.holo) {
 			const hull = this.holo.ports.find((p) => p.path === '');
-			for (const p of hull ? [hull] : this.holo.ports) box.union(p.mesh.geometry.boundingBox!);
+			for (const p of hull ? [hull] : this.holo.ports) box.union(p.bounds);
 		} else if (this.detail) {
 			const v = new THREE.Box3();
 			this.detail.root.updateMatrixWorld(true);

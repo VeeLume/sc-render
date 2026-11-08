@@ -8,11 +8,13 @@
 //! Nothing here ships game data: everything is read from the user's own
 //! `Data.p4k` at runtime.
 
+mod holo;
 mod model;
 mod scene;
 mod ship;
 mod texture;
 
+pub use holo::{Holo, HoloEdges, HoloInfo, HoloPort};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
 pub use scene::{
     Fallback, PartLook, Pose, SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart,

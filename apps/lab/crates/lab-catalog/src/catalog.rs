@@ -169,11 +169,16 @@ impl Catalog {
         self.hangar.list(|g| self.record(g))
     }
 
-    /// A ship with its stock loadout, ready to draw, with its damage tooling.
-    pub fn ship(&self, assets: &Assets, guid: &str) -> Result<HangarShip> {
+    /// What a host cooks to assemble ships from any loadout.
+    pub fn cook_inputs(&self) -> (&Visuals, &Palettes) {
+        (&self.visuals, &self.palettes)
+    }
+
+    /// A ship with its stock loadout, assembled for drawing.
+    pub fn ship_scene(&self, assets: &Assets, guid: &str) -> Result<Scene> {
         let guid = parse_guid(guid)?;
         let ship = self.hangar.vehicle(&guid)?;
-        let scene: Scene = sc_vehicles::scene(
+        sc_vehicles::scene(
             &self.visuals,
             &self.palettes,
             &guid,
@@ -181,7 +186,13 @@ impl Catalog {
             &ship.stock,
             |path| CharacterDefinition::read(assets.source(), path).map_err(|e| e.to_string()),
         )
-        .ok_or_else(|| Error::Catalog(format!("{guid}: no geometry")))?;
+        .ok_or_else(|| Error::Catalog(format!("{guid}: no geometry")))
+    }
+
+    /// A ship with its stock loadout, ready to draw, with its damage tooling.
+    pub fn ship(&self, assets: &Assets, guid: &str) -> Result<HangarShip> {
+        let scene = self.ship_scene(assets, guid)?;
+        let guid = parse_guid(guid)?;
         let (node_parts, parts, components) =
             self.hangar
                 .overlays(assets.source(), &guid, &self.items, |g| self.label(g))?;

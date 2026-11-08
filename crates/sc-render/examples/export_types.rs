@@ -5,7 +5,9 @@
 //! cargo run -p sc-render --features specta --example export_types
 //! ```
 
-use sc_render::{BoneInfo, MaterialInfo, ModelInfo, PartLook, SceneItem, ShipScene, TextureKind};
+use sc_render::{
+    BoneInfo, HoloInfo, MaterialInfo, ModelInfo, PartLook, SceneItem, ShipScene, TextureKind,
+};
 use specta::TypeCollection;
 use specta_typescript::Typescript;
 
@@ -20,6 +22,7 @@ fn main() {
         .register::<TextureKind>()
         .register::<SceneItem>()
         .register::<ShipScene>()
+        .register::<HoloInfo>()
         .register::<PartLook>();
     Typescript::default()
         .export_to(&path, &types)

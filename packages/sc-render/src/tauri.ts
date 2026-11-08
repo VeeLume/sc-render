@@ -2,7 +2,7 @@
 // descriptions over its commands, heavy bytes over its `scr` URI scheme.
 import { invoke } from '@tauri-apps/api/core';
 import type { DecodeKind, RenderSource, TextureData, VolumeData } from './library';
-import type { BoneInfo, MaterialInfo, ModelInfo } from './types';
+import type { BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart } from './types';
 
 const base = navigator.userAgent.includes('Windows') ? 'http://scr.localhost' : 'scr://localhost';
 
@@ -17,6 +17,40 @@ async function fetchBytes(u: string): Promise<ArrayBuffer> {
 	const r = await fetch(u);
 	if (!r.ok) throw new Error(`${u}: ${await r.text()}`);
 	return r.arrayBuffer();
+}
+
+interface SharedBufferEvent {
+	additionalData?: { scRender?: string };
+	getBuffer(): ArrayBuffer;
+}
+interface WebView2 {
+	addEventListener(type: 'sharedbufferreceived', listener: (e: SharedBufferEvent) => void): void;
+	releaseBuffer(buffer: ArrayBuffer): void;
+}
+
+/** WebView2, where big buffers skip the scheme's per-byte cost. */
+const webview = (globalThis as { chrome?: { webview?: WebView2 } }).chrome?.webview;
+const arrived = new Map<string, ArrayBuffer>();
+const awaited = new Map<string, (buffer: ArrayBuffer) => void>();
+webview?.addEventListener('sharedbufferreceived', (e) => {
+	const id = e.additionalData?.scRender;
+	if (!id) return;
+	const buffer = e.getBuffer();
+	const resolve = awaited.get(id);
+	if (resolve) {
+		awaited.delete(id);
+		resolve(buffer);
+	} else arrived.set(id, buffer);
+});
+
+/** The shared buffer posted as `id`, however the event and the reply race. */
+function sharedBuffer(id: string): Promise<ArrayBuffer> {
+	const buffer = arrived.get(id);
+	if (buffer) {
+		arrived.delete(id);
+		return Promise.resolve(buffer);
+	}
+	return new Promise((resolve) => awaited.set(id, resolve));
 }
 
 let source: RenderSource | undefined;
@@ -42,6 +76,12 @@ export function tauriSource(): RenderSource {
 				offset += len;
 			}
 			return { width, height, srgb: srgb !== 0, levels };
+		},
+		async holo(root: ScenePart) {
+			const info = await invoke<HoloInfo>('plugin:sc-render|load_holo', { root, shared: !!webview });
+			if (!info.shared) return { info, buffer: await fetchBytes(url('model', { path: info.path })) };
+			const buffer = await sharedBuffer(info.path);
+			return { info, buffer, release: () => webview!.releaseBuffer(buffer) };
 		},
 		async hueLut(): Promise<VolumeData> {
 			const buf = await fetchBytes(url('hue_lut'));

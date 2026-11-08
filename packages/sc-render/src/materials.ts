@@ -132,7 +132,7 @@ function srgb(c: [number, number, number]): THREE.Color {
 }
 
 /** Whether a submaterial's surface is drawn (proxies are not). */
-export function isDrawn(s: SubMaterialInfo): boolean {
+function isDrawn(s: SubMaterialInfo): boolean {
 	return !NO_DRAW.has(s.shader) && !s.name.startsWith('$');
 }
 

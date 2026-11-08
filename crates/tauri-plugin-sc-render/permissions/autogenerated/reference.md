@@ -1,12 +1,13 @@
 ## Default Permission
 
-Load models, materials and skeletons; the scr scheme needs no permission.
+Load models, materials, skeletons and holograms; the scr scheme needs no permission.
 
 #### This default permission set includes the following:
 
 - `allow-load-model`
 - `allow-load-material`
 - `allow-load-skeleton`
+- `allow-load-holo`
 
 ## Permission Table
 
@@ -16,6 +17,32 @@ Load models, materials and skeletons; the scr scheme needs no permission.
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`sc-render:allow-load-holo`
+
+</td>
+<td>
+
+Enables the load_holo command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sc-render:deny-load-holo`
+
+</td>
+<td>
+
+Denies the load_holo command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>

@@ -7,7 +7,7 @@
 use sc_extract::Guid;
 use sc_items::Item;
 use sc_items_visuals::{InventoryView, Palette, Part, Scene, SceneNote, Visual};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// An item to draw in one cell.
 #[derive(Debug, Clone, Serialize)]
@@ -30,7 +30,7 @@ pub struct SceneItem {
 }
 
 /// One item's geometry and what hangs on it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScenePart {
     /// The name the log shows.
@@ -46,7 +46,7 @@ pub struct ScenePart {
     pub palette: Option<[ScenePaletteEntry; 3]>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScenePiece {
     pub geometry: String,
@@ -54,7 +54,7 @@ pub struct ScenePiece {
     pub material: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SceneAttachment {
     /// Bone or geometry node; empty for a part skinned to this one's
@@ -74,7 +74,7 @@ pub struct SceneAttachment {
 }
 
 /// A palette entry, sRGB bytes; gloss 0..=255.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScenePaletteEntry {
     pub tint: [u8; 3],

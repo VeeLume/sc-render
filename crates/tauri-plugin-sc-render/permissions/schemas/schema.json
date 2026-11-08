@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the load_holo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-holo",
+          "markdownDescription": "Enables the load_holo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_holo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-holo",
+          "markdownDescription": "Denies the load_holo command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_material command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-material",
@@ -331,10 +343,10 @@
           "markdownDescription": "Denies the load_skeleton command without any pre-configured scope."
         },
         {
-          "description": "Load models, materials and skeletons; the scr scheme needs no permission.\n#### This default permission set includes:\n\n- `allow-load-model`\n- `allow-load-material`\n- `allow-load-skeleton`",
+          "description": "Load models, materials, skeletons and holograms; the scr scheme needs no permission.\n#### This default permission set includes:\n\n- `allow-load-model`\n- `allow-load-material`\n- `allow-load-skeleton`\n- `allow-load-holo`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Load models, materials and skeletons; the scr scheme needs no permission.\n#### This default permission set includes:\n\n- `allow-load-model`\n- `allow-load-material`\n- `allow-load-skeleton`"
+          "markdownDescription": "Load models, materials, skeletons and holograms; the scr scheme needs no permission.\n#### This default permission set includes:\n\n- `allow-load-model`\n- `allow-load-material`\n- `allow-load-skeleton`\n- `allow-load-holo`"
         }
       ]
     }

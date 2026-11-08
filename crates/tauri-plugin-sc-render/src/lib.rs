@@ -10,7 +10,9 @@
 //!
 //! Capabilities: `sc-render:default`. Commands (`plugin:sc-render|…`):
 //! `load_model { path }` → `ModelInfo`, `load_material { path }` →
-//! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`. Scheme routes:
+//! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`, `load_holo { root }`
+//! → `HoloInfo` (its buffer is the `model` route with `path` = `HoloInfo.path`).
+//! Scheme routes:
 //!
 //! - `scr://localhost/model?path=…`: the packed buffer of a model loaded
 //!   with `load_model`; one fetch per load, then the plugin lets go of it.
@@ -23,9 +25,10 @@
 //! A resident host calls [`RenderState::evict`] when its window goes away.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sc_render::{Assets, BoneInfo, MaterialInfo, ModelInfo, TextureKind};
+use sc_render::{Assets, BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart, TextureKind};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{Manager, Runtime, State, UriSchemeContext, UriSchemeResponder};
@@ -38,7 +41,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             load_model,
             load_material,
-            load_skeleton
+            load_skeleton,
+            load_holo
         ])
         .register_asynchronous_uri_scheme_protocol("scr", protocol)
         .setup(|app, _| {
@@ -54,6 +58,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 pub struct RenderState {
     assets: Mutex<Option<Arc<Assets>>>,
     buffers: Mutex<HashMap<String, Pending>>,
+    holos: AtomicU64,
 }
 
 /// A loaded model's buffer and how many loads have yet to fetch it.
@@ -92,6 +97,17 @@ impl RenderState {
         self.buffers.lock().unwrap().clear();
     }
 
+    /// Keep a load's buffer until it is fetched.
+    fn store(&self, key: String, buffer: Vec<u8>) {
+        let mut buffers = self.buffers.lock().unwrap();
+        let pending = buffers.entry(key).or_insert_with(|| Pending {
+            buffer: Arc::default(),
+            loads: 0,
+        });
+        pending.buffer = Arc::new(buffer);
+        pending.loads += 1;
+    }
+
     /// The buffer of a load, released when the last load has fetched it.
     fn take_buffer(&self, path: &str) -> Option<Vec<u8>> {
         let mut buffers = self.buffers.lock().unwrap();
@@ -126,16 +142,102 @@ async fn load_model(state: State<'_, RenderState>, path: String) -> Result<Model
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let mut buffers = state.buffers.lock().unwrap();
-    let pending = buffers
-        .entry(path.to_ascii_lowercase())
-        .or_insert_with(|| Pending {
-            buffer: Arc::default(),
-            loads: 0,
-        });
-    pending.buffer = Arc::new(model.buffer);
-    pending.loads += 1;
+    state.store(path.to_ascii_lowercase(), model.buffer);
     Ok(model.info)
+}
+
+/// Build a ship's hologram; its buffer is then served at `scr://localhost/model`.
+///
+/// With `shared`, on WebView2, it is posted as a shared buffer instead: the
+/// custom scheme costs about 7.5 ms per MB there, which is most of a big
+/// ship's first open.
+#[tauri::command]
+async fn load_holo<R: Runtime>(
+    webview: tauri::Webview<R>,
+    state: State<'_, RenderState>,
+    root: ScenePart,
+    shared: Option<bool>,
+) -> Result<HoloInfo, String> {
+    let assets = state.assets()?;
+    let holo = tauri::async_runtime::spawn_blocking(move || assets.holo(&root))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut info = holo.info;
+    info.path = format!("holo:{}", state.holos.fetch_add(1, Ordering::Relaxed));
+    let buffer = Arc::new(holo.buffer);
+    if shared.unwrap_or(false) {
+        let (id, bytes) = (info.path.clone(), buffer.clone());
+        let posted = tauri::async_runtime::spawn_blocking(move || post_shared(&webview, id, bytes))
+            .await
+            .map_err(|e| e.to_string())?;
+        match posted {
+            Ok(()) => {
+                info.shared = true;
+                return Ok(info);
+            }
+            Err(e) => info.notes.push(format!(
+                "holo: shared buffer failed ({e}), using the scheme"
+            )),
+        }
+    }
+    state.store(
+        info.path.clone(),
+        Arc::try_unwrap(buffer).unwrap_or_else(|b| b.as_ref().clone()),
+    );
+    Ok(info)
+}
+
+/// Copy `bytes` into a WebView2 shared buffer and post it to the page, tagged
+/// `{ "scRender": id }`. The page releases it with `chrome.webview.releaseBuffer`.
+#[cfg(windows)]
+fn post_shared<R: Runtime>(
+    webview: &tauri::Webview<R>,
+    id: String,
+    bytes: Arc<Vec<u8>>,
+) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_WRITE, ICoreWebView2_2, ICoreWebView2_17,
+        ICoreWebView2Environment12,
+    };
+    use windows_core::{HSTRING, Interface, PCWSTR};
+
+    let (done, result) = std::sync::mpsc::channel();
+    webview
+        .with_webview(move |w| {
+            // SAFETY: on the webview's thread, as these interfaces require;
+            // `target` is the mapping of a buffer of exactly `bytes.len()`.
+            let posted = (|| unsafe {
+                let core = w.controller().CoreWebView2()?;
+                let environment = core
+                    .cast::<ICoreWebView2_2>()?
+                    .Environment()?
+                    .cast::<ICoreWebView2Environment12>()?;
+                let buffer = environment.CreateSharedBuffer(bytes.len() as u64)?;
+                let mut target = std::ptr::null_mut();
+                buffer.Buffer(&mut target)?;
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+                let tag = HSTRING::from(format!("{{\"scRender\":\"{id}\"}}"));
+                core.cast::<ICoreWebView2_17>()?.PostSharedBufferToScript(
+                    &buffer,
+                    COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_WRITE,
+                    PCWSTR(tag.as_ptr()),
+                )?;
+                // The page holds its own view; ours can go.
+                buffer.Close()
+            })();
+            let _ = done.send(posted.map_err(|e: windows_core::Error| e.to_string()));
+        })
+        .map_err(|e| e.to_string())?;
+    result.recv().map_err(|e| e.to_string())?
+}
+
+#[cfg(not(windows))]
+fn post_shared<R: Runtime>(
+    _webview: &tauri::Webview<R>,
+    _id: String,
+    _bytes: Arc<Vec<u8>>,
+) -> Result<(), String> {
+    Err("only WebView2 has shared buffers".into())
 }
 
 /// A `.chr` skeleton's bones.

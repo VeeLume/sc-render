@@ -53,6 +53,10 @@ Nothing here may ship game data: every asset is read from the local install at r
   before and after.
 - **A view draws on demand.** No animation loop: a frame comes from orbit, resize or a setter.
   Hosts are resident tray apps; `dispose` must free the GPU memory.
+- **The holo is built in Rust** (`Assets::holo`) and posted to WebView2 as a shared buffer: one
+  file at a time over the bridge cost a capital ship 6 to 13 s. Probe:
+  `cargo run -p lab-catalog --release --example ship_load_cost -- --all`. A Tauri bump can move
+  `webview2-com`; the plugin's own dependency must match it.
 - The lab's dev run renders a fixed item set and writes snapshots and logs to
   `%APPDATA%/icu.veelume.scitemrender/snapshots/`; compare them across renderer changes.
 

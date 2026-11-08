@@ -10,6 +10,50 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
 rotation: [number, number, number, number] }
 
 /**
+ * The hull's crease lines: pairs of `i16 × 4` positions (normalised).
+ */
+export type HoloEdges = { centre: [number, number, number]; scale: number; vertex_count: number; offset: number }
+
+/**
+ * What a hologram's buffer holds. See the module docs for the layout.
+ */
+export type HoloInfo = { 
+/**
+ * Where a host serves the buffer from; empty until it stores it.
+ */
+path: string; 
+/**
+ * The host posted the buffer as a shared buffer, tagged with `path`,
+ * instead of serving it.
+ */
+shared: boolean; 
+/**
+ * One draw per port, the hull (path `""`) first when there is one.
+ */
+ports: HoloPort[]; edges: HoloEdges | null; 
+/**
+ * What could not be drawn, and where the time went (shown in the log).
+ */
+notes: string[]; byte_length: number }
+
+/**
+ * One port's merged geometry.
+ */
+export type HoloPort = { 
+/**
+ * Port names from the hull down, joined by `/`, lower case.
+ */
+path: string; 
+/**
+ * Decodes a position: `centre + xyz * scale`.
+ */
+centre: [number, number, number]; scale: number; 
+/**
+ * Bounds in the ship frame.
+ */
+min: [number, number, number]; max: [number, number, number]; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number; indices_offset: number; wide_indices: boolean }
+
+/**
  * One placed interior geometry file.
  */
 export type InteriorBrush = { geometry: string; 
