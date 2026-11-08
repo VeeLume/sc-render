@@ -118,7 +118,7 @@ impl Assets {
         // everything else waits for.
         let paths: Vec<(&String, &&str)> = files.geometry.iter().map(|(k, p)| (k, p)).collect();
         let read = across_cores(&paths, |(_, path)| {
-            MeshGeometry::read(self.source(), path).map(Arc::new)
+            MeshGeometry::read_shape(self.source(), path).map(Arc::new)
         });
         let mut meshes = HashMap::with_capacity(paths.len());
         for ((key, path), result) in paths.iter().zip(read) {
