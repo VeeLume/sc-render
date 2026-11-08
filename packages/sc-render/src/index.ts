@@ -11,5 +11,6 @@ export {
 	type TextureKind,
 	type VolumeData
 } from './library';
+export { ShipView, type ShipMode, type ShipViewOptions, type SliceAxis } from './ship';
 export { AXIS_LOCKS, VIEW_HINT, bindWheelZoom, viewControls, type AxisLock } from './viewControls';
 export type * from './types';

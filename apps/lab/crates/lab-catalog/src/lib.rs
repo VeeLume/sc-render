@@ -4,9 +4,14 @@
 
 mod catalog;
 mod look;
+mod ships;
 
 pub use catalog::{Body, Catalog, ChildSpec, FALLBACK, InventoryNode, ItemSummary};
 pub use look::{CharacterFile, CharacterLook, character_files, character_look};
+pub use ships::{
+    ComponentDamage, ExposureDirection, HangarShip, HullPart, ShipComponent, ShipSummary,
+    ShotResult, ShotSpec, WeaponSummary,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

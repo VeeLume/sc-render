@@ -7,15 +7,20 @@ app they are developed in.
 ```
 crates/sc-render/                GPU prep: models packed for upload, .mtl as data, DDS decoded
                                  (mips, normal / gloss packing), hue LUT, skeletons; the
-                                 SceneItem contract and its builder from holotable's scene.
+                                 SceneItem / ShipScene contracts and their builders from
+                                 holotable's scene.
 crates/tauri-plugin-sc-render/   Commands (load_model / load_material / load_skeleton) and the
-                                 `scr` byte scheme. Capability `sc-render:default`.
-packages/sc-render/              @veelume/sc-render: Cell, materials, posing, capture. The host
-                                 passes a RenderSource; `./tauri` is the plugin's, `./svelte`
-                                 a Viewport. Ships source, no build step.
+                                 `scr` byte scheme; `RenderState::evict` for a resident host.
+                                 Capability `sc-render:default`.
+packages/sc-render/              @veelume/sc-render: Cell (items: materials, posing, capture)
+                                 and ShipView (ships: holo, materials, slice, highlight by
+                                 port path). The host passes a RenderSource; `./tauri` is the
+                                 plugin's, `./svelte` Viewport and ShipViewport. Ships source,
+                                 no build step.
 apps/lab/                        sc-item-render: the lab app (Tauri + SvelteKit). Its catalog
-                                 (DataCore items, Starlume inventory dumps, .chf colours) is
-                                 apps/lab/crates/lab-catalog, not part of the library.
+                                 (DataCore items, Starlume inventory dumps, .chf colours) and
+                                 the ship damage tooling (collision shell, shots, exposure)
+                                 are apps/lab/crates/lab-catalog, not part of the library.
 ```
 
 ## Where things belong
@@ -42,8 +47,12 @@ Nothing here may ship game data: every asset is read from the local install at r
 - **three is pinned to one minor** (peer `>=0.186 <0.187`): the materials patch three's shader
   chunks by source line and warn when a chunk changed. Bumping three means checking those
   warnings in the lab.
-- **Bumping holotable**: the four `sc-*` workspace dependencies in the root `Cargo.toml` move
-  together. Compare `scene_probe` output (lab-catalog example) before and after.
+- **Bumping holotable**: the `sc-*` workspace dependencies in the root `Cargo.toml` move
+  together, to the tag the consuming app pins (`Scene` crosses the crate boundary, and two
+  holotable versions make it two types). Compare `scene_probe` output (lab-catalog example)
+  before and after.
+- **A view draws on demand.** No animation loop: a frame comes from orbit, resize or a setter.
+  Hosts are resident tray apps; `dispose` must free the GPU memory.
 - The lab's dev run renders a fixed item set and writes snapshots and logs to
   `%APPDATA%/icu.veelume.scitemrender/snapshots/`; compare them across renderer changes.
 

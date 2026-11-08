@@ -68,6 +68,8 @@ pub struct SceneAttachment {
     /// The attached item's own helper (bone or node) that meets the bone,
     /// instead of its origin (`ItemOffsetHelperName`).
     pub item_helper: Option<String>,
+    /// The parent's port, as the loadout names it; `None` for a `.cdf` part.
+    pub port: Option<String>,
     pub part: ScenePart,
 }
 
@@ -189,7 +191,7 @@ impl SceneItem {
 impl ScenePart {
     /// The renderer's view of a part: names for the log, palette as bytes,
     /// a skinned attachment's bone empty.
-    fn new(part: &Part, parent: &str, names: &impl Fn(&Guid) -> String) -> Self {
+    pub(crate) fn new(part: &Part, parent: &str, names: &impl Fn(&Guid) -> String) -> Self {
         let record = match (&part.item, &part.cdf_attachment) {
             (Some(g), _) => names(g),
             (None, Some(a)) => format!("{parent} / {a}"),
@@ -214,6 +216,7 @@ impl ScenePart {
                     offset_position: a.offset.position,
                     offset_rotation: a.offset.rotation,
                     item_helper: a.item_helper.clone(),
+                    port: a.port.clone(),
                     part: Self::new(&a.part, &record, names),
                 })
                 .collect(),
@@ -223,7 +226,7 @@ impl ScenePart {
     }
 }
 
-fn note(n: &SceneNote, name: &impl Fn(&Guid) -> String) -> String {
+pub(crate) fn note(n: &SceneNote, name: &impl Fn(&Guid) -> String) -> String {
     match n {
         SceneNote::NoGeometry { item } => format!("{}: no geometry for these tags", name(item)),
         SceneNote::CdfUnreadable { path, reason } => format!("{path}: {reason}"),

@@ -4,7 +4,10 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use lab_catalog::{Body, Catalog, ChildSpec, InventoryNode, ItemSummary};
+use lab_catalog::{
+    Body, Catalog, ChildSpec, ExposureDirection, HangarShip, InventoryNode, ItemSummary,
+    ShipSummary, ShotResult, ShotSpec, WeaponSummary,
+};
 use sc_render::SceneItem;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sc_render::ScRenderExt;
@@ -80,6 +83,65 @@ pub async fn item_scene(
                 children.as_deref(),
                 body.unwrap_or_default(),
             )
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// The listed player ships and vehicles, by label.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_ships(app: AppHandle) -> Result<Vec<ShipSummary>, String> {
+    blocking(move || Ok(wait(&app)?.ships())).await
+}
+
+/// A ship with its stock loadout, ready to draw, with its damage tooling.
+#[tauri::command]
+#[specta::specta]
+pub async fn ship_view(app: AppHandle, guid: String) -> Result<HangarShip, String> {
+    blocking(move || {
+        let catalog = wait(&app)?;
+        let assets = app.sc_render().assets()?;
+        catalog.ship(&assets, &guid).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Every ship gun with damage.
+#[tauri::command]
+#[specta::specta]
+pub async fn ship_weapons(app: AppHandle) -> Result<Vec<WeaponSummary>, String> {
+    blocking(move || Ok(wait(&app)?.ship_weapons())).await
+}
+
+/// One shot at a ship's stock loadout.
+#[tauri::command]
+#[specta::specta]
+pub async fn ship_hit(app: AppHandle, guid: String, shot: ShotSpec) -> Result<ShotResult, String> {
+    blocking(move || {
+        let catalog = wait(&app)?;
+        let assets = app.sc_render().assets()?;
+        catalog
+            .ship_hit(&assets, &guid, &shot)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Attack directions on one of a ship's components, shallowest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn ship_exposure(
+    app: AppHandle,
+    guid: String,
+    component: u32,
+    samples: u32,
+) -> Result<Vec<ExposureDirection>, String> {
+    blocking(move || {
+        let catalog = wait(&app)?;
+        let assets = app.sc_render().assets()?;
+        catalog
+            .ship_exposure(&assets, &guid, component, samples)
             .map_err(|e| e.to_string())
     })
     .await

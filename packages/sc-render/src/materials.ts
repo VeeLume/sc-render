@@ -131,9 +131,14 @@ function srgb(c: [number, number, number]): THREE.Color {
 	return new THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace);
 }
 
+/** Whether a submaterial's surface is drawn (proxies are not). */
+export function isDrawn(s: SubMaterialInfo): boolean {
+	return !NO_DRAW.has(s.shader) && !s.name.startsWith('$');
+}
+
 /** One submaterial; `null` for parts that are not drawn (proxies). */
 export async function buildMaterial(lib: Library, s: SubMaterialInfo, palette?: Palette, look?: PartLook): Promise<THREE.Material | null> {
-	if (NO_DRAW.has(s.shader) || s.name.startsWith('$')) return null;
+	if (!isDrawn(s)) return null;
 	if (s.shader.startsWith('LayerBlend')) return layerBlend(lib, s, palette);
 	if (s.shader === 'GlassPBR') return glass(lib, s);
 	if (s.shader === 'Organic') return organic(lib, s);

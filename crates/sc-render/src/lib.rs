@@ -1,14 +1,16 @@
 //! Star Citizen render inputs, read from the local install and shaped for a
 //! GPU renderer: models as one packed vertex/index buffer plus a description
 //! ([`ModelInfo`]), materials as plain data ([`MaterialInfo`]), textures as
-//! decoded RGBA8 ([`Rgba`]); and the scene a cell draws ([`SceneItem`]),
-//! built from sc-holotable's assembled item.
+//! decoded RGBA8 ([`Rgba`]); and what the views draw, built from
+//! sc-holotable's assembly: a cell's [`SceneItem`], a ship view's
+//! [`ShipScene`].
 //!
 //! Nothing here ships game data: everything is read from the user's own
 //! `Data.p4k` at runtime.
 
 mod model;
 mod scene;
+mod ship;
 mod texture;
 
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
@@ -16,6 +18,7 @@ pub use scene::{
     Fallback, PartLook, Pose, SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart,
     ScenePiece,
 };
+pub use ship::{InteriorBrush, NodePart, ShipScene};
 pub use texture::{Mip, Rgba, TextureKind, Volume};
 
 use std::collections::HashMap;

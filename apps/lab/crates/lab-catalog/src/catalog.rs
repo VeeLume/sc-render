@@ -11,10 +11,13 @@ use sc_extract::{
     AssetConfig, AssetData, CharacterDefinition, CrcIndex, Datacore, Guid, RecordCollection,
 };
 use sc_items::Items;
-use sc_items_visuals::{Attached, InventoryView, Palettes, Visual, Visuals};
-use sc_render::{Assets, Fallback, Pose, SceneItem};
+use sc_items_visuals::{Attached, InventoryView, Palettes, Scene, Visual, Visuals};
+use sc_render::{Assets, Fallback, Pose, SceneItem, ShipScene};
 use serde::{Deserialize, Serialize};
 
+use crate::ships::{
+    ExposureDirection, Hangar, HangarShip, ShipSummary, ShotResult, ShotSpec, WeaponSummary,
+};
 use crate::{Error, Result};
 
 /// Poses for what the inventory view has no orientation entry for.
@@ -65,8 +68,10 @@ pub struct Catalog {
     crcs: CrcIndex,
     /// Display name, else record name, per item.
     labels: HashMap<Guid, String>,
-    /// Record name (without the `EntityClassDefinition.` prefix) per item.
+    /// Record name (without the `EntityClassDefinition.` prefix) per item
+    /// and vehicle.
     records: HashMap<Guid, String>,
+    hangar: Hangar,
 }
 
 /// A search hit.
@@ -126,8 +131,11 @@ impl Catalog {
                 records.insert(r.id(), short.to_string());
             }
         }
+        let hangar = Hangar::build(&datacore, &items, source, &data.locale);
+        // Items only: vehicles have visuals too, but are listed as ships.
         let labels = records
             .iter()
+            .filter(|(g, _)| items.get(g).is_some())
             .map(|(g, record)| {
                 let label = items
                     .get(g)
@@ -145,7 +153,72 @@ impl Catalog {
             crcs,
             labels,
             records,
+            hangar,
         })
+    }
+
+    fn record(&self, guid: &Guid) -> String {
+        self.records
+            .get(guid)
+            .cloned()
+            .unwrap_or_else(|| guid.to_string())
+    }
+
+    /// The listed player ships and vehicles.
+    pub fn ships(&self) -> Vec<ShipSummary> {
+        self.hangar.list(|g| self.record(g))
+    }
+
+    /// A ship with its stock loadout, ready to draw, with its damage tooling.
+    pub fn ship(&self, assets: &Assets, guid: &str) -> Result<HangarShip> {
+        let guid = parse_guid(guid)?;
+        let ship = self.hangar.vehicle(&guid)?;
+        let scene: Scene = sc_vehicles::scene(
+            &self.visuals,
+            &self.palettes,
+            &guid,
+            ship,
+            &ship.stock,
+            |path| CharacterDefinition::read(assets.source(), path).map_err(|e| e.to_string()),
+        )
+        .ok_or_else(|| Error::Catalog(format!("{guid}: no geometry")))?;
+        let (node_parts, parts, components) =
+            self.hangar
+                .overlays(assets.source(), &guid, &self.items, |g| self.label(g))?;
+        let label = self.hangar.label(&guid, |g| self.record(g));
+        let mut scene = ShipScene::new(&scene, label, |g| self.record(g));
+        scene.node_parts = node_parts;
+        scene.interior = self.hangar.interior(assets.source(), &guid)?;
+        Ok(HangarShip {
+            scene,
+            parts,
+            components,
+        })
+    }
+
+    /// Every ship gun with damage.
+    pub fn ship_weapons(&self) -> Vec<WeaponSummary> {
+        self.hangar.weapons(|g| self.label(g))
+    }
+
+    /// One shot at a ship's stock loadout.
+    pub fn ship_hit(&self, assets: &Assets, guid: &str, spec: &ShotSpec) -> Result<ShotResult> {
+        let guid = parse_guid(guid)?;
+        self.hangar
+            .hit(assets.source(), &guid, &self.items, spec, |g| self.label(g))
+    }
+
+    /// Attack directions on one of a ship's components, shallowest first.
+    pub fn ship_exposure(
+        &self,
+        assets: &Assets,
+        guid: &str,
+        component: u32,
+        samples: u32,
+    ) -> Result<Vec<ExposureDirection>> {
+        let guid = parse_guid(guid)?;
+        self.hangar
+            .exposure(assets.source(), &guid, &self.items, component, samples)
     }
 
     /// Every item with a recipe, by label then record name.

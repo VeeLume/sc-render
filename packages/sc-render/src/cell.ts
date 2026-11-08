@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import type { BoneInfo, ModelInfo, PartLook, SceneItem, ScenePaletteEntry, ScenePart, SubMaterialInfo } from './types';
 import { Library, type RenderSource } from './library';
-import { buildMaterial } from './materials';
+import { buildMaterial, isDrawn } from './materials';
 /** A tint palette: entries A, B, C. */
 export type Palette = ScenePaletteEntry[];
 
@@ -181,7 +181,7 @@ export class Cell {
 		const character = !!fx.root.skeleton?.toLowerCase().endsWith('.chr') && fx.root.pieces.length === 0;
 		await rig.init(pose ?? character);
 		for (const n of rig.notes) log.push(`pose: ${n}`);
-		const model = await buildItem(this.lib, fx.root, log, 0, rig, looks);
+		const model = await buildItem(this.lib, fx.root, log, 0, rig, looks, build(false));
 
 		// Pose: defaultOrientation (90,0,0) + category offset, about the bounds centre.
 		const rot = new THREE.Group();
@@ -602,6 +602,30 @@ function standingPose(
 	return notes;
 }
 
+/** One assembly's settings and what it shares. */
+interface Build {
+	/** Meshes get {@link GEOMETRY_ONLY} and no texture is read. */
+	geometryOnly: boolean;
+	/** Files already read, so a model used many times crosses the bridge once. */
+	models: Map<string, Promise<{ info: ModelInfo; buffer: ArrayBuffer }>>;
+}
+
+const build = (geometryOnly: boolean): Build => ({ geometryOnly, models: new Map() });
+
+/** What a geometry-only assembly's drawn surfaces carry until the view replaces it. */
+const GEOMETRY_ONLY = new THREE.MeshBasicMaterial();
+
+/**
+ * A scene tree drawn unposed, in its root's own frame (a ship and its
+ * loadout), with a cell's assembly and, unless `geometryOnly`, its materials.
+ * An attachment's holder group carries `userData.port`.
+ */
+export async function buildScene(lib: Library, root: ScenePart, log: string[], geometryOnly = false): Promise<THREE.Group> {
+	const rig = new CharacterRig(lib, root);
+	await rig.init(false);
+	return buildItem(lib, root, log, 0, rig, new Map(), build(geometryOnly));
+}
+
 /**
  * An item and, recursively, what is attached to it. Each attachment hangs on
  * a bone of the item's skeleton (or one a worn skin adds to it) or, failing
@@ -614,13 +638,27 @@ async function buildItem(
 	log: string[],
 	depth: number,
 	character: CharacterRig,
-	looks: Looks
+	looks: Looks,
+	assembly: Build
 ): Promise<THREE.Group> {
 	const pad = '  '.repeat(depth);
 	log.push(`${pad}${item.record}`);
 	const group = new THREE.Group();
 	for (const piece of item.pieces) {
-		const { info, buffer } = await lib.model(piece.geometry);
+		const key = piece.geometry.toLowerCase();
+		let loading = assembly.models.get(key);
+		if (!loading) {
+			loading = lib.model(piece.geometry);
+			assembly.models.set(key, loading);
+		}
+		// One unreadable file (a reference to a missing one) must not blank the
+		// whole scene.
+		const loaded = await loading.catch((e: unknown) => {
+			log.push(`${pad}  ${piece.geometry}: not drawn (${e})`);
+			return null;
+		});
+		if (!loaded) continue;
+		const { info, buffer } = loaded;
 		const mtlPath = piece.material ?? info.material;
 		const mtl = mtlPath ? await lib.material(mtlPath) : null;
 		log.push(`${pad}  ${piece.geometry.split('/').pop()}: ${info.vertex_count} vertices, ${info.index_count / 3} triangles`);
@@ -631,7 +669,7 @@ async function buildItem(
 			character.posing && info.joints_offset != null && piece.geometry.toLowerCase().endsWith('.skin')
 				? { bones: await character.skinBones(piece.geometry), rig: character }
 				: undefined;
-		group.add(await buildModel(lib, info, buffer, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin));
+		group.add(await buildModel(lib, info, buffer, mtl?.submaterials ?? [], depth ? [] : log, item.palette ?? undefined, look, skin, assembly.geometryOnly));
 	}
 	if (!item.attachments.length) return group;
 	const bones = item.skeleton ? await lib.skeleton(item.skeleton) : [];
@@ -667,10 +705,11 @@ async function buildItem(
 		}
 		const on = name ? `${at.bone} (${bone || posed ? 'bone' : 'node'})` : 'its skeleton (skinned)';
 		log.push(`${pad}  on ${on}${at.item_helper ? ` by its ${at.item_helper}` : ''}:`);
-		const child = await buildItem(lib, at.part, log, depth + 1, character, looks);
+		const child = await buildItem(lib, at.part, log, depth + 1, character, looks, assembly);
 		// The port's offset, then the child moved so its own helper (not its
 		// origin) sits on the port.
 		const holder = new THREE.Group();
+		if (at.port) holder.userData.port = at.port;
 		holder.position.set(...at.offset_position);
 		holder.quaternion.set(...at.offset_rotation);
 		if (at.item_helper) {
@@ -710,6 +749,23 @@ async function helperMatrix(lib: Library, part: ScenePart, group: THREE.Object3D
 	return new THREE.Matrix4().copy(group.matrixWorld).invert().multiply(node.matrixWorld);
 }
 
+/** The box around the vertices `index` uses (positions xyz-packed). */
+function indexedBox(positions: Float32Array, index: Uint32Array): THREE.Box3 {
+	const min = [Infinity, Infinity, Infinity];
+	const max = [-Infinity, -Infinity, -Infinity];
+	for (let i = 0; i < index.length; i++) {
+		const o = index[i] * 3;
+		for (let k = 0; k < 3; k++) {
+			const v = positions[o + k];
+			if (v < min[k]) min[k] = v;
+			if (v > max[k]) max[k] = v;
+		}
+	}
+	return index.length
+		? new THREE.Box3(new THREE.Vector3(...min), new THREE.Vector3(...max))
+		: new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+}
+
 /** A skin's own bone list and the character rig its bones join (by name). */
 interface SkinBinding {
 	bones: BoneInfo[];
@@ -724,7 +780,8 @@ async function buildModel(
 	log: string[],
 	palette?: Palette,
 	look?: PartLook,
-	skin?: SkinBinding
+	skin?: SkinBinding,
+	geometryOnly = false
 ) {
 	const n = info.vertex_count;
 	const geomAttrs: Record<string, THREE.BufferAttribute> = {
@@ -780,7 +837,12 @@ async function buildModel(
 	for (const sm of info.submeshes) {
 		const sub = subs[sm.material];
 		if (!materialCache.has(sm.material)) {
-			materialCache.set(sm.material, sub ? buildMaterial(lib, sub, palette, look) : Promise.resolve(null));
+			const made = !sub
+				? Promise.resolve(null)
+				: geometryOnly
+					? Promise.resolve(isDrawn(sub) ? GEOMETRY_ONLY : null)
+					: buildMaterial(lib, sub, palette, look);
+			materialCache.set(sm.material, made);
 		}
 		const material = await materialCache.get(sm.material)!;
 		if (!material) {
@@ -789,7 +851,12 @@ async function buildModel(
 		}
 		const g = new THREE.BufferGeometry();
 		for (const [k, a] of Object.entries(geomAttrs)) g.setAttribute(k, a);
-		g.setIndex(new THREE.BufferAttribute(indices.subarray(sm.first_index, sm.first_index + sm.index_count), 1));
+		const own = indices.subarray(sm.first_index, sm.first_index + sm.index_count);
+		g.setIndex(new THREE.BufferAttribute(own, 1));
+		// The submesh's own bounds: three would take the whole shared buffer's,
+		// which defeats frustum culling and instance culling.
+		g.boundingBox = indexedBox(geomAttrs.position.array as Float32Array, own);
+		g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
 		let mesh: THREE.Mesh;
 		if (skeleton) {
 			const skinned = new THREE.SkinnedMesh(g, material);

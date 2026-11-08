@@ -13,15 +13,17 @@
 //! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`. Scheme routes:
 //!
 //! - `scr://localhost/model?path=…`: the packed buffer of a model loaded
-//!   with `load_model`.
+//!   with `load_model`; one fetch per load, then the plugin lets go of it.
 //! - `scr://localhost/texture?path=…&kind=color|normal|gloss|normal_gloss&max=1024`:
 //!   header (width, height, sRGB flag, level count as `u32` LE), then every
 //!   level's RGBA8, largest first, each half the one before.
 //! - `scr://localhost/hue_lut`: header (width, height, depth as `u32` LE),
 //!   then RGBA8.
+//!
+//! A resident host calls [`RenderState::evict`] when its window goes away.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use sc_render::{Assets, BoneInfo, MaterialInfo, ModelInfo, TextureKind};
 use tauri::http::{Request, Response, StatusCode};
@@ -50,19 +52,57 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 /// buffers waiting to be fetched.
 #[derive(Default)]
 pub struct RenderState {
-    assets: OnceLock<Arc<Assets>>,
-    buffers: Mutex<HashMap<String, Arc<Vec<u8>>>>,
+    assets: Mutex<Option<Arc<Assets>>>,
+    buffers: Mutex<HashMap<String, Pending>>,
+}
+
+/// A loaded model's buffer and how many loads have yet to fetch it.
+struct Pending {
+    buffer: Arc<Vec<u8>>,
+    loads: usize,
 }
 
 impl RenderState {
-    /// The primary install, opened on first call. A host that reads the
-    /// DataCore too shares it from here.
+    /// The primary install, opened on first call and again after
+    /// [`evict`](Self::evict). A host that reads the DataCore too shares it
+    /// from here, and does not keep the `Arc` longer than it needs it.
     pub fn assets(&self) -> Result<Arc<Assets>, String> {
-        if let Some(a) = self.assets.get() {
+        let mut assets = self.assets.lock().unwrap();
+        if let Some(a) = assets.as_ref() {
             return Ok(a.clone());
         }
         let opened = Arc::new(Assets::open().map_err(|e| e.to_string())?);
-        Ok(self.assets.get_or_init(|| opened).clone())
+        *assets = Some(opened.clone());
+        Ok(opened)
+    }
+
+    /// Let go of the install, its decoded textures and any model buffer not
+    /// fetched yet. The next call reopens the install. A load in flight
+    /// finishes on the `Arc` it holds; a model fetched after this fails, so
+    /// call it when no view is drawing.
+    ///
+    /// ```no_run
+    /// # fn demo<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    /// use tauri_plugin_sc_render::ScRenderExt;
+    /// app.sc_render().evict();
+    /// # }
+    /// ```
+    pub fn evict(&self) {
+        self.assets.lock().unwrap().take();
+        self.buffers.lock().unwrap().clear();
+    }
+
+    /// The buffer of a load, released when the last load has fetched it.
+    fn take_buffer(&self, path: &str) -> Option<Vec<u8>> {
+        let mut buffers = self.buffers.lock().unwrap();
+        let key = path.to_ascii_lowercase();
+        let pending = buffers.get_mut(&key)?;
+        pending.loads -= 1;
+        if pending.loads == 0 {
+            let buffer = buffers.remove(&key)?.buffer;
+            return Some(Arc::try_unwrap(buffer).unwrap_or_else(|b| b.as_ref().clone()));
+        }
+        Some(pending.buffer.as_ref().clone())
     }
 }
 
@@ -86,11 +126,15 @@ async fn load_model(state: State<'_, RenderState>, path: String) -> Result<Model
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    state
-        .buffers
-        .lock()
-        .unwrap()
-        .insert(path.to_ascii_lowercase(), Arc::new(model.buffer));
+    let mut buffers = state.buffers.lock().unwrap();
+    let pending = buffers
+        .entry(path.to_ascii_lowercase())
+        .or_insert_with(|| Pending {
+            buffer: Arc::default(),
+            loads: 0,
+        });
+    pending.buffer = Arc::new(model.buffer);
+    pending.loads += 1;
     Ok(model.info)
 }
 
@@ -172,11 +216,7 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
     let path = query.get("path").ok_or("missing path")?;
     match uri.path() {
         "/model" => state
-            .buffers
-            .lock()
-            .unwrap()
-            .get(&path.to_ascii_lowercase())
-            .map(|b| b.as_ref().clone())
+            .take_buffer(path)
             .ok_or_else(|| format!("model not loaded: {path}")),
         "/texture" => {
             let kind = match query.get("kind").map(String::as_str) {

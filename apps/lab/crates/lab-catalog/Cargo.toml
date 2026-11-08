@@ -10,6 +10,9 @@ sc-discovery = { workspace = true }
 sc-extract = { workspace = true }
 sc-items = { workspace = true }
 sc-items-visuals = { workspace = true }
+sc-vehicles = { workspace = true }
+sc-items-ship-components = { workspace = true }
+sc-weapons = { workspace = true }
 sc-render = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -120,6 +120,61 @@ async characterLook(path: string) : Promise<Result<CharacterLook, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * The listed player ships and vehicles, by label.
+ */
+async listShips() : Promise<Result<ShipSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_ships") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * A ship with its stock loadout, ready to draw, with its damage tooling.
+ */
+async shipView(guid: string) : Promise<Result<HangarShip, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ship_view", { guid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Every ship gun with damage.
+ */
+async shipWeapons() : Promise<Result<WeaponSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ship_weapons") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * One shot at a ship's stock loadout.
+ */
+async shipHit(guid: string, shot: ShotSpec) : Promise<Result<ShotResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ship_hit", { guid, shot }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Attack directions on one of a ship's components, shallowest first.
+ */
+async shipExposure(guid: string, component: number, samples: number) : Promise<Result<ExposureDirection[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ship_exposure", { guid, component, samples }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -167,6 +222,45 @@ export type ChildSpec = { port: string; guid: string;
  * `None`: the item's own default loadout.
  */
 children: ChildSpec[] | null }
+export type ComponentDamage = { index: number; label: string; depth: number; damage: number }
+/**
+ * One attack direction on a component.
+ */
+export type ExposureDirection = { 
+/**
+ * The shot's direction (unit, ship frame).
+ */
+direction: [number, number, number]; 
+/**
+ * Hull surface to the component's centre, m.
+ */
+depth: number; part: string | null }
+/**
+ * A ship's stock loadout, drawable, with its damage tooling. Positions are
+ * in the ship frame (x right, y forward, z up, metres).
+ */
+export type HangarShip = { scene: ShipScene; 
+/**
+ * Damage parts with their HP and collision shell (what shots hit).
+ */
+parts: HullPart[]; 
+/**
+ * Mounted items with their boxes.
+ */
+components: ShipComponent[] }
+export type HullPart = { name: string; hp: number; 
+/**
+ * Collision shell triangles, ship frame.
+ */
+positions: ([number, number, number])[]; indices: number[] }
+/**
+ * One placed interior geometry file.
+ */
+export type InteriorBrush = { geometry: string; 
+/**
+ * Ship frame, 3 × 4 row-major.
+ */
+transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
 /**
  * One item of an inventory dump, resolved.
  */
@@ -188,6 +282,10 @@ export type ItemSummary = { guid: string; label: string; record: string;
  * `Type/SubType`.
  */
 kind: string }
+/**
+ * A hull mesh node and the damage part it belongs to.
+ */
+export type NodePart = { node: string; part: string }
 /**
  * Colour overrides for one item of a character (a saved character's hair
  * dye, eye and skin colour), applied by the materials that read them.
@@ -225,7 +323,11 @@ offset_position: [number, number, number]; offset_rotation: [number, number, num
  * The attached item's own helper (bone or node) that meets the bone,
  * instead of its origin (`ItemOffsetHelperName`).
  */
-item_helper: string | null; part: ScenePart }
+item_helper: string | null; 
+/**
+ * The parent's port, as the loadout names it; `None` for a `.cdf` part.
+ */
+port: string | null; part: ScenePart }
 /**
  * An item to draw in one cell.
  */
@@ -285,6 +387,104 @@ export type ScenePiece = { geometry: string;
  * `None`: the geometry's own `MtlName`.
  */
 material: string | null }
+export type ShipComponent = { 
+/**
+ * Index for [`Hangar::exposure`] and in [`ShotResult::components`].
+ */
+index: number; 
+/**
+ * Port path from the hull (`turret/gimbal/gun`).
+ */
+path: string; guid: string; label: string; 
+/**
+ * `Type/SubType`.
+ */
+kind: string; 
+/**
+ * Its frame in the ship frame, 3 × 4 row-major.
+ */
+transform: [number, number, number, number, number, number, number, number, number, number, number, number]; 
+/**
+ * Its mesh bounds in its own frame; `None` without geometry.
+ */
+min: [number, number, number] | null; max: [number, number, number] | null; 
+/**
+ * HP when penetration can damage it.
+ */
+health: number | null }
+/**
+ * A ship to draw.
+ * 
+ * [`node_parts`](Self::node_parts) and [`interior`](Self::interior) are
+ * optional: empty, the view has no per-damage-part colouring and no
+ * interior.
+ */
+export type ShipScene = { id: string; label: string; root: ScenePart; 
+/**
+ * What could not be resolved (shown in the log).
+ */
+notes: string[]; 
+/**
+ * Hull mesh node → damage part, for colouring the drawn hull.
+ */
+node_parts: NodePart[]; 
+/**
+ * The interior's static geometry (walls, floors, fixtures).
+ */
+interior: InteriorBrush[] }
+/**
+ * A ship in the list.
+ */
+export type ShipSummary = { guid: string; label: string; record: string; 
+/**
+ * `Base` or `Edition` (the player-ship listing).
+ */
+listing: string }
+export type ShotResult = { 
+/**
+ * Where it lands on the collision shell; `None` for a miss.
+ */
+point: [number, number, number] | null; part: string | null; shield_taken: number; 
+/**
+ * Total damage passed through the shield.
+ */
+passed: number; 
+/**
+ * Total damage past the armour.
+ */
+after_armor: number; armor_wear: number; hull_damage: number; 
+/**
+ * Penetration depth, m, from `point` along the shot.
+ */
+depth: number; components: ComponentDamage[] }
+/**
+ * One shot at a ship.
+ */
+export type ShotSpec = { origin: [number, number, number]; direction: [number, number, number]; 
+/**
+ * The gun's record name.
+ */
+weapon: string; 
+/**
+ * Armour HP ratio, 0..=1.
+ */
+armor: number; 
+/**
+ * Struck shield face HP ratio, 0..=1 (0 = down).
+ */
+shield: number }
+/**
+ * A gun in the weapon list.
+ */
+export type WeaponSummary = { record: string; label: string; size: number; 
+/**
+ * Per shot: physical, energy, distortion, thermal, biochemical, stun.
+ */
+damage: [number, number, number, number, number, number]; 
+/**
+ * Penetration depth, m, for projectiles that have one.
+ */
+penetration: number | null }
 
 /** tauri-specta globals **/
 

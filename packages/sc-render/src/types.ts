@@ -9,6 +9,15 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
  */
 rotation: [number, number, number, number] }
 
+/**
+ * One placed interior geometry file.
+ */
+export type InteriorBrush = { geometry: string; 
+/**
+ * Ship frame, 3 × 4 row-major.
+ */
+transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
+
 export type LayerInfo = { name: string; path: string; submaterial: string; tint: [number, number, number]; wear_tint: [number, number, number]; gloss_mult: number; wear_gloss: number; uv_tiling: number; palette_tint: number }
 
 /**
@@ -36,6 +45,11 @@ export type NodeInfo = { name: string; parent: number | null;
  * 3 × 4 row-major, relative to the parent.
  */
 transform: [number, number, number, number, number, number, number, number, number, number, number, number] }
+
+/**
+ * A hull mesh node and the damage part it belongs to.
+ */
+export type NodePart = { node: string; part: string }
 
 /**
  * Colour overrides for one item of a character (a saved character's hair
@@ -75,7 +89,11 @@ offset_position: [number, number, number]; offset_rotation: [number, number, num
  * The attached item's own helper (bone or node) that meets the bone,
  * instead of its origin (`ItemOffsetHelperName`).
  */
-item_helper: string | null; part: ScenePart }
+item_helper: string | null; 
+/**
+ * The parent's port, as the loadout names it; `None` for a `.cdf` part.
+ */
+port: string | null; part: ScenePart }
 
 /**
  * An item to draw in one cell.
@@ -140,6 +158,27 @@ export type ScenePiece = { geometry: string;
  * `None`: the geometry's own `MtlName`.
  */
 material: string | null }
+
+/**
+ * A ship to draw.
+ * 
+ * [`node_parts`](Self::node_parts) and [`interior`](Self::interior) are
+ * optional: empty, the view has no per-damage-part colouring and no
+ * interior.
+ */
+export type ShipScene = { id: string; label: string; root: ScenePart; 
+/**
+ * What could not be resolved (shown in the log).
+ */
+notes: string[]; 
+/**
+ * Hull mesh node → damage part, for colouring the drawn hull.
+ */
+node_parts: NodePart[]; 
+/**
+ * The interior's static geometry (walls, floors, fixtures).
+ */
+interior: InteriorBrush[] }
 
 export type SubMaterialInfo = { name: string; shader: string; features: string[]; diffuse: [number, number, number]; specular: [number, number, number]; emissive: [number, number, number]; opacity: number; shininess: number; alpha_test: number; textures: TextureSlot[]; layers: LayerInfo[]; params: ([string, string])[] }
 

@@ -66,6 +66,20 @@ export class Library {
 
 	private constructor(readonly source: RenderSource) {}
 
+	/**
+	 * Forget everything loaded and free the textures' GPU memory. For a host
+	 * going to the background; a view still drawing re-uploads what it uses
+	 * from the data it holds, and later loads read the source again.
+	 */
+	evict() {
+		for (const t of this.textures.values()) void t.then((tex) => tex?.dispose());
+		void this.lut?.then((tex) => tex?.dispose());
+		this.textures.clear();
+		this.materials.clear();
+		this.skeletons.clear();
+		this.lut = undefined;
+	}
+
 	/** The library of `source`, shared by every cell that draws from it. */
 	static of(source: RenderSource): Library {
 		let lib = libraries.get(source);
