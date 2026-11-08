@@ -71,7 +71,8 @@ pub struct HoloPort {
     pub wide_indices: bool,
 }
 
-/// The hull's crease lines: pairs of `i16 × 4` positions (normalised).
+/// The crease lines: pairs of `i16 × 4` positions (normalised), longest
+/// first, so drawing a prefix keeps the lines that carry the shape.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct HoloEdges {
@@ -79,6 +80,17 @@ pub struct HoloEdges {
     pub scale: f32,
     pub vertex_count: u32,
     pub offset: u32,
+    /// Prefixes to draw, shortest prefix first.
+    pub levels: Vec<HoloEdgeLevel>,
+}
+
+/// A prefix of the crease lines.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct HoloEdgeLevel {
+    pub vertex_count: u32,
+    /// Total length of the prefix's lines, metres.
+    pub length: f32,
 }
 
 impl Assets {
@@ -749,6 +761,59 @@ fn crease_lines(flat: &[&Instance], surveys: &[Survey]) -> Vec<[f32; 3]> {
     across_cores(&jobs, |(inst, at)| place_lines(inst, &pairs[*at], shortest)).concat()
 }
 
+/// Point pairs reordered longest first, in half-octave length classes (a
+/// counting sort: this runs on every open), with the prefix ending each class.
+fn by_length(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
+    const CLASSES: usize = 48;
+    let pairs = points.as_chunks::<2>().0;
+    let measured: Vec<f32> = pairs
+        .iter()
+        .map(|[p, q]| {
+            let (x, y, z) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+            (x * x + y * y + z * z).sqrt()
+        })
+        .collect();
+    let longest = measured.iter().copied().fold(0.0, f32::max);
+    let classes: Vec<u8> = measured
+        .iter()
+        .map(|&len| {
+            if len > 0.0 {
+                (((longest / len).log2() * 2.0) as usize).min(CLASSES - 1) as u8
+            } else {
+                (CLASSES - 1) as u8
+            }
+        })
+        .collect();
+    let mut counts = [0usize; CLASSES];
+    let mut lengths = [0.0f32; CLASSES];
+    for (&c, &len) in classes.iter().zip(&measured) {
+        counts[usize::from(c)] += 1;
+        lengths[usize::from(c)] += len;
+    }
+    let mut next = [0usize; CLASSES];
+    let mut levels = Vec::new();
+    let (mut at, mut total) = (0, 0.0);
+    for c in 0..CLASSES {
+        next[c] = at;
+        at += counts[c];
+        total += lengths[c];
+        if counts[c] > 0 {
+            levels.push(HoloEdgeLevel {
+                vertex_count: at as u32 * 2,
+                length: total,
+            });
+        }
+    }
+    let mut out = vec![[0.0; 3]; points.len()];
+    for (pair, &c) in pairs.iter().zip(&classes) {
+        let c = usize::from(c);
+        out[next[c] * 2] = pair[0];
+        out[next[c] * 2 + 1] = pair[1];
+        next[c] += 1;
+    }
+    (out, levels)
+}
+
 /// Cut the next `len` bytes at `offset` off `rest`, which starts at `cursor`.
 fn carve<'a>(
     rest: &mut &'a mut [u8],
@@ -778,7 +843,7 @@ fn assemble<'b>(
 ) -> HoloInfo {
     let flat: Vec<&Instance> = ports.iter().flat_map(|(_, list)| list.iter()).collect();
     let surveys = across_cores(&flat, |inst| survey(inst));
-    let lines = crease_lines(&flat, &surveys);
+    let (lines, levels) = by_length(&crease_lines(&flat, &surveys));
 
     let mut info = HoloInfo::default();
     let mut size = 0;
@@ -835,6 +900,7 @@ fn assemble<'b>(
             scale,
             vertex_count: lines.len() as u32,
             offset: offset as u32,
+            levels,
         });
         (offset, centre, scale)
     });
@@ -1122,6 +1188,18 @@ mod tests {
         // Share the edge 0-1; the faces meet at 90 degrees.
         let lines = creases(&instance(fold, vec![0, 1, 2, 1, 0, 3], IDENTITY), 0.0);
         assert_eq!(lines.len(), 5, "the fold plus the four open edges");
+    }
+
+    #[test]
+    fn lines_come_longest_first_with_growing_prefixes() {
+        let at = |x: f32| [x, 0.0, 0.0];
+        let points = [at(0.0), at(1.0), at(0.0), at(16.0), at(0.0), at(4.0)];
+        let (out, levels) = by_length(&points);
+        assert_eq!(out, [at(0.0), at(16.0), at(0.0), at(4.0), at(0.0), at(1.0)]);
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0].vertex_count, 2);
+        assert_eq!(levels[2].vertex_count, 6);
+        assert!((levels[2].length - 21.0).abs() < 1e-3);
     }
 
     #[test]

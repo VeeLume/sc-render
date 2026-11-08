@@ -13,7 +13,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildScene } from './cell';
 import { HOLO_BACKGROUND, HOLO_EDGE, HOLO_GRID, HOLO_HULL, MAX_BLEND, holoMaterial, setHoloOpacity } from './holo';
 import { Library, type RenderSource } from './library';
-import type { ScenePart, ShipScene } from './types';
+import type { HoloEdgeLevel, ScenePart, ShipScene } from './types';
 
 /**
  * How the ship is drawn: a hologram, its materials, a colour per damage part
@@ -40,7 +40,16 @@ const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: 
  * packed tight merge into a mass unless they are dimmer, and get crisp as the
  * camera closes in. Checked by eye from a Gladius to an Idris at card size.
  */
-const EDGE_STRENGTH = { base: 0.45, perPixelPerMetre: 0.045, max: 1 };
+const EDGE_STRENGTH = { base: 0.75, perPixelPerMetre: 0.03, max: 1 };
+/**
+ * How much line a view may show, as line pixels per pixel of the ship on
+ * screen; the longest lines go first. Far out a dense ship (a Centaurus)
+ * keeps only the lines that carry its shape, and closing in brings the
+ * detail back. Picked by eye at card size: under 3 the panels are gone,
+ * and with every line a Centaurus is a blob.
+ */
+const EDGE_INK = 4.5;
+const HIDDEN_INK = 0.7;
 /** What the hull's fill and lines keep while a part is lit. */
 const FOCUS_HULL = 0.55;
 /** Lines behind the ship's skin, as a share of those in front: depth at a glance. */
@@ -117,6 +126,8 @@ interface HoloModel {
 	edges: THREE.LineSegments | null;
 	/** The same lines behind it, faint. */
 	hiddenEdges: THREE.LineSegments | null;
+	/** Prefixes of the lines, longest lines first. */
+	levels: HoloEdgeLevel[];
 	/** Gives back the buffer the geometry reads from. */
 	release?: () => void;
 }
@@ -439,12 +450,17 @@ export class ShipView {
 		});
 		let edges: THREE.LineSegments | null = null;
 		let hiddenEdges: THREE.LineSegments | null = null;
+		let levels: HoloEdgeLevel[] = [];
 		if (info.edges) {
 			const e = info.edges;
 			const g = new THREE.BufferGeometry();
 			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, e.offset, e.vertex_count * 4), 4, true));
+			// Two geometries over one attribute: each shows its own prefix.
+			const behind = new THREE.BufferGeometry();
+			behind.setAttribute('position', g.getAttribute('position'));
 			edges = new THREE.LineSegments(g, this.edgeMaterial(THREE.LessEqualDepth));
-			hiddenEdges = new THREE.LineSegments(g, this.edgeMaterial(THREE.GreaterDepth));
+			hiddenEdges = new THREE.LineSegments(behind, this.edgeMaterial(THREE.GreaterDepth));
+			levels = e.levels;
 			for (const lines of [edges, hiddenEdges]) {
 				// The lines span the ship, so they are never culled.
 				lines.frustumCulled = false;
@@ -463,7 +479,7 @@ export class ShipView {
 			depth.matrixAutoUpdate = false;
 			root.add(depth);
 		}
-		return { root, ports, edges, hiddenEdges, release };
+		return { root, ports, edges, hiddenEdges, levels, release };
 	}
 
 	private async buildDetail(ship: ShipScene, log: string[]): Promise<DetailModel> {
@@ -651,6 +667,18 @@ export class ShipView {
 		const focus = this.highlights.length ? FOCUS_HULL : 1;
 		(edges.material as THREE.LineBasicMaterial).opacity = strength * focus;
 		(hidden.material as THREE.LineBasicMaterial).opacity = strength * focus * HIDDEN_EDGES;
+		const size = this.bounds.getSize(new THREE.Vector3());
+		// A box's mean projected area is a quarter of its surface.
+		const area = Math.max(1e-3, (size.x * size.y + size.y * size.z + size.z * size.x) / 2);
+		const prefix = (ink: number) => {
+			const budget = ink * area * pixelsPerMetre;
+			const levels = this.holo?.levels ?? [];
+			let count = levels[0]?.vertex_count ?? 0;
+			for (const l of levels) if (l.length <= budget) count = l.vertex_count;
+			return count;
+		};
+		edges.geometry.setDrawRange(0, prefix(EDGE_INK));
+		hidden.geometry.setDrawRange(0, prefix(HIDDEN_INK));
 	}
 
 	/** Writes the ship's skin to depth only, nudged back so lines on it stay in front. */

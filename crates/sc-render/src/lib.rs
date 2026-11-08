@@ -14,7 +14,7 @@ mod scene;
 mod ship;
 mod texture;
 
-pub use holo::{Holo, HoloEdges, HoloInfo, HoloPort};
+pub use holo::{Holo, HoloEdgeLevel, HoloEdges, HoloInfo, HoloPort};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
 pub use scene::{
     Fallback, PartLook, Pose, SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart,

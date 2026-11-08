@@ -23,6 +23,7 @@ fn main() {
         .register::<SceneItem>()
         .register::<ShipScene>()
         .register::<HoloInfo>()
+        .register::<sc_render::HoloEdgeLevel>()
         .register::<PartLook>();
     Typescript::default()
         .export_to(&path, &types)

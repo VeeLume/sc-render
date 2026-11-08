@@ -10,9 +10,23 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
 rotation: [number, number, number, number] }
 
 /**
- * The hull's crease lines: pairs of `i16 × 4` positions (normalised).
+ * A prefix of the crease lines.
  */
-export type HoloEdges = { centre: [number, number, number]; scale: number; vertex_count: number; offset: number }
+export type HoloEdgeLevel = { vertex_count: number; 
+/**
+ * Total length of the prefix's lines, metres.
+ */
+length: number }
+
+/**
+ * The crease lines: pairs of `i16 × 4` positions (normalised), longest
+ * first, so drawing a prefix keeps the lines that carry the shape.
+ */
+export type HoloEdges = { centre: [number, number, number]; scale: number; vertex_count: number; offset: number; 
+/**
+ * Prefixes to draw, shortest prefix first.
+ */
+levels: HoloEdgeLevel[] }
 
 /**
  * What a hologram's buffer holds. See the module docs for the layout.
