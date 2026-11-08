@@ -43,13 +43,13 @@ const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: 
 const EDGE_STRENGTH = { base: 0.75, perPixelPerMetre: 0.03, max: 1 };
 /**
  * How much line a view may show, as line pixels per pixel of the ship on
- * screen; the longest lines go first. Far out a dense ship (a Centaurus)
- * keeps only the lines that carry its shape, and closing in brings the
- * detail back. Picked by eye at card size: under 3 the panels are gone,
- * and with every line a Centaurus is a blob.
+ * screen; the prefix covers the ship evenly (`spread_evenly`). Far out a
+ * dense ship (a Centaurus) keeps only a share of its lines, and closing in
+ * brings the detail back. Picked by eye at card size: from 4 up a Centaurus
+ * turns back into a blob.
  */
-const EDGE_INK = 4.5;
-const HIDDEN_INK = 0.7;
+const EDGE_INK = 1.6;
+const HIDDEN_INK = 0.25;
 /** What the hull's fill and lines keep while a part is lit. */
 const FOCUS_HULL = 0.55;
 /** Lines behind the ship's skin, as a share of those in front: depth at a glance. */

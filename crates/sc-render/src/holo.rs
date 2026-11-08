@@ -71,8 +71,8 @@ pub struct HoloPort {
     pub wide_indices: bool,
 }
 
-/// The crease lines: pairs of `i16 × 4` positions (normalised), longest
-/// first, so drawing a prefix keeps the lines that carry the shape.
+/// The crease lines: pairs of `i16 × 4` positions (normalised), ordered so
+/// that drawing any prefix covers the whole ship evenly.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct HoloEdges {
@@ -761,29 +761,61 @@ fn crease_lines(flat: &[&Instance], surveys: &[Survey]) -> Vec<[f32; 3]> {
     across_cores(&jobs, |(inst, at)| place_lines(inst, &pairs[*at], shortest)).concat()
 }
 
-/// Point pairs reordered longest first, in half-octave length classes (a
-/// counting sort: this runs on every open), with the prefix ending each class.
-fn by_length(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
-    const CLASSES: usize = 48;
+/// Point pairs reordered so any prefix covers the ship evenly: the ship is cut
+/// into cells, and each cell gives up its longest line first, then its second
+/// longest, and so on. Ranking by length across the whole ship left some
+/// parts full of long lines beside bare neighbours, which read as streaks.
+/// Returns the prefix ending each rank class.
+fn spread_evenly(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
+    const CLASSES: usize = 32;
+    /// Cells across the ship's radius: a few pixels each at card size.
+    const CELLS_PER_RADIUS: f32 = 30.0;
     let pairs = points.as_chunks::<2>().0;
-    let measured: Vec<f32> = pairs
-        .iter()
-        .map(|[p, q]| {
-            let (x, y, z) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-            (x * x + y * y + z * z).sqrt()
-        })
-        .collect();
-    let longest = measured.iter().copied().fold(0.0, f32::max);
-    let classes: Vec<u8> = measured
-        .iter()
-        .map(|&len| {
-            if len > 0.0 {
-                (((longest / len).log2() * 2.0) as usize).min(CLASSES - 1) as u8
-            } else {
-                (CLASSES - 1) as u8
-            }
-        })
-        .collect();
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in points {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
+    let radius = (0..3)
+        .map(|k| ((max[k] - min[k]) * 0.5).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let cell = (radius / CELLS_PER_RADIUS).max(1e-3);
+    let mut measured = Vec::with_capacity(pairs.len());
+    let mut cells: QuickMap<u64, Vec<(f32, u32)>> = QuickMap::default();
+    for (i, [p, q]) in pairs.iter().enumerate() {
+        let (x, y, z) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+        let len = (x * x + y * y + z * z).sqrt();
+        measured.push(len);
+        let at = |k: usize| (((p[k] + q[k]) * 0.5 - min[k]) / cell) as u64 & 0x1F_FFFF;
+        cells
+            .entry(at(0) << 42 | at(1) << 21 | at(2))
+            .or_default()
+            .push((len, i as u32));
+    }
+    let cells: Vec<Vec<(f32, u32)>> = cells.into_values().collect();
+    let ranked = across_cores(&cells, |lines| {
+        let mut sorted = lines.clone();
+        sorted.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        sorted
+    });
+    // Every early rank has its own class, then they widen: the budget needs
+    // fine steps where it spends most of its time.
+    let class_of = |rank: usize| {
+        if rank < 8 {
+            rank
+        } else {
+            (8 + ((rank as f32 / 8.0).log2() * 3.0) as usize).min(CLASSES - 1)
+        }
+    };
+    let mut classes = vec![0u8; pairs.len()];
+    for lines in &ranked {
+        for (rank, &(_, i)) in lines.iter().enumerate() {
+            classes[i as usize] = class_of(rank) as u8;
+        }
+    }
     let mut counts = [0usize; CLASSES];
     let mut lengths = [0.0f32; CLASSES];
     for (&c, &len) in classes.iter().zip(&measured) {
@@ -843,7 +875,7 @@ fn assemble<'b>(
 ) -> HoloInfo {
     let flat: Vec<&Instance> = ports.iter().flat_map(|(_, list)| list.iter()).collect();
     let surveys = across_cores(&flat, |inst| survey(inst));
-    let (lines, levels) = by_length(&crease_lines(&flat, &surveys));
+    let (lines, levels) = spread_evenly(&crease_lines(&flat, &surveys));
 
     let mut info = HoloInfo::default();
     let mut size = 0;
@@ -1191,15 +1223,28 @@ mod tests {
     }
 
     #[test]
-    fn lines_come_longest_first_with_growing_prefixes() {
+    fn every_cell_gives_up_its_longest_line_before_any_second_line() {
         let at = |x: f32| [x, 0.0, 0.0];
-        let points = [at(0.0), at(1.0), at(0.0), at(16.0), at(0.0), at(4.0)];
-        let (out, levels) = by_length(&points);
-        assert_eq!(out, [at(0.0), at(16.0), at(0.0), at(4.0), at(0.0), at(1.0)]);
-        assert_eq!(levels.len(), 3);
-        assert_eq!(levels[0].vertex_count, 2);
-        assert_eq!(levels[2].vertex_count, 6);
-        assert!((levels[2].length - 21.0).abs() < 1e-3);
+        // Two clusters far apart: the near one's second line is longer than
+        // the far one's first, and must still wait for it.
+        let points = [
+            at(0.0),
+            at(4.0),
+            at(0.0),
+            at(3.0),
+            at(1000.0),
+            at(1002.0),
+            at(1000.0),
+            at(1001.0),
+        ];
+        let (out, levels) = spread_evenly(&points);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].vertex_count, 4);
+        assert_eq!(levels[1].vertex_count, 8);
+        assert!((levels[0].length - 6.0).abs() < 1e-3, "4 m and 2 m first");
+        assert!((levels[1].length - 10.0).abs() < 1e-3);
+        let first: Vec<f32> = out[..4].iter().map(|p| p[0]).collect();
+        assert!(first.contains(&4.0) && first.contains(&1002.0));
     }
 
     #[test]
