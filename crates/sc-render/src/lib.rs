@@ -14,7 +14,7 @@ mod scene;
 mod ship;
 mod texture;
 
-pub use holo::{Holo, HoloEdgeLevel, HoloEdges, HoloInfo, HoloPort};
+pub use holo::{Holo, HoloEdgeLevel, HoloGeometry, HoloInfo, HoloPart, HoloRequest};
 pub use model::{Model, ModelInfo, NodeInfo, SubmeshInfo};
 pub use scene::{
     Fallback, PartLook, Pose, SceneAttachment, SceneItem, SceneLight, ScenePaletteEntry, ScenePart,
@@ -70,7 +70,14 @@ impl Assets {
 
     /// A geometry file (`.cgf` / `.cga` / `.skin`) packed for upload.
     pub fn model(&self, path: &str) -> Result<Model> {
-        let g = sc_extract::MeshGeometry::read(&self.source, path)?;
+        self.model_level(path, 0)
+    }
+
+    /// [`model`](Self::model) at one of the game's detail levels, 0 being
+    /// the full mesh; a file without that level gives its nearest finer one
+    /// ([`ModelInfo::level`] says which).
+    pub fn model_level(&self, path: &str, level: u8) -> Result<Model> {
+        let g = sc_extract::MeshGeometry::read_level(&self.source, path, level)?;
         Ok(Model::pack(path, &g))
     }
 

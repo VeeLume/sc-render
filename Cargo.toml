@@ -25,6 +25,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+# Until sc-holotable releases MeshGeometry::read_level; replace with a pin bump.
+[patch."https://github.com/VeeLume/sc-holotable"]
+sc-discovery = { path = "../sc-holotable/crates/sc-discovery" }
+sc-extract = { path = "../sc-holotable/crates/sc-extract" }
+sc-extract-generated = { path = "../sc-holotable/crates/sc-extract-generated" }
+
 # Profiles must live at the workspace root — member profiles are ignored.
 [profile.dev]
 incremental = true

@@ -3,7 +3,7 @@
 // `Library` turns its answers into three.js objects once and shares them
 // between every cell drawing from the same source.
 import * as THREE from 'three';
-import type { BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart } from './types';
+import type { BoneInfo, HoloInfo, HoloRequest, MaterialInfo, ModelInfo, ScenePart } from './types';
 
 /** Decoded pixels: RGBA8 levels, largest first, each half the one before. */
 export interface TextureData {
@@ -34,8 +34,12 @@ export type DecodeKind = 'color' | 'normal' | 'gloss' | 'normal_gloss';
  * logs them and draws what it has.
  */
 export interface RenderSource {
-	/** A geometry file packed for upload (layout: `ModelInfo`). */
-	model(path: string): Promise<{ info: ModelInfo; buffer: ArrayBuffer }>;
+	/**
+	 * A geometry file packed for upload (layout: `ModelInfo`), at one of the
+	 * game's detail levels: 0, the default, is the full mesh, and a file
+	 * without the level asked gives its nearest finer one (`ModelInfo.level`).
+	 */
+	model(path: string, options?: { level?: number }): Promise<{ info: ModelInfo; buffer: ArrayBuffer }>;
 	/** A `.mtl` file (extension optional). */
 	material(path: string): Promise<MaterialInfo>;
 	/** A `.chr` or `.skin`'s bones, model space. */
@@ -45,11 +49,12 @@ export interface RenderSource {
 	/** The LayerBlend hue-shift lookup table (8 x 8 x 16). */
 	hueLut(): Promise<VolumeData>;
 	/**
-	 * A scene's hologram, built in one go (layout: `HoloInfo`). `release`,
-	 * when given, is to be called once the buffer is no longer read; reading
-	 * it afterwards throws.
+	 * A scene's hologram, built in one go (layout: `HoloInfo`): at the
+	 * request's detail level, or just some geometries at another level.
+	 * `release`, when given, is to be called once the buffer is no longer
+	 * read; reading it afterwards throws.
 	 */
-	holo(root: ScenePart): Promise<{ info: HoloInfo; buffer: ArrayBuffer; release?: () => void }>;
+	holo(root: ScenePart, request?: Partial<HoloRequest>): Promise<{ info: HoloInfo; buffer: ArrayBuffer; release?: () => void }>;
 }
 
 /**
@@ -97,8 +102,8 @@ export class Library {
 	}
 
 	/** Not cached: buffers are large, and a cell keeps what it built from them. */
-	model(path: string): Promise<{ info: ModelInfo; buffer: ArrayBuffer }> {
-		return this.source.model(path);
+	model(path: string, options?: { level?: number }): Promise<{ info: ModelInfo; buffer: ArrayBuffer }> {
+		return this.source.model(path, options);
 	}
 
 	/** `null` when the file is missing or unreadable. */

@@ -2,7 +2,7 @@
 // descriptions over its commands, heavy bytes over its `scr` URI scheme.
 import { invoke } from '@tauri-apps/api/core';
 import type { DecodeKind, RenderSource, TextureData, VolumeData } from './library';
-import type { BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart } from './types';
+import type { BoneInfo, HoloInfo, HoloRequest, MaterialInfo, ModelInfo, ScenePart } from './types';
 
 const base = navigator.userAgent.includes('Windows') ? 'http://scr.localhost' : 'scr://localhost';
 
@@ -58,9 +58,10 @@ let source: RenderSource | undefined;
 /** The plugin's source; one per app, so every cell shares its caches. */
 export function tauriSource(): RenderSource {
 	source ??= {
-		async model(path) {
-			const info = await invoke<ModelInfo>('plugin:sc-render|load_model', { path });
-			return { info, buffer: await fetchBytes(url('model', { path })) };
+		async model(path, options) {
+			const level = options?.level ?? 0;
+			const info = await invoke<ModelInfo>('plugin:sc-render|load_model', { path, level });
+			return { info, buffer: await fetchBytes(url('model', { path: level ? `${path}@${level}` : path })) };
 		},
 		material: (path) => invoke<MaterialInfo>('plugin:sc-render|load_material', { path }),
 		skeleton: (path) => invoke<BoneInfo[]>('plugin:sc-render|load_skeleton', { path }),
@@ -77,8 +78,8 @@ export function tauriSource(): RenderSource {
 			}
 			return { width, height, srgb: srgb !== 0, levels };
 		},
-		async holo(root: ScenePart) {
-			const info = await invoke<HoloInfo>('plugin:sc-render|load_holo', { root, shared: !!webview });
+		async holo(root: ScenePart, request?: Partial<HoloRequest>) {
+			const info = await invoke<HoloInfo>('plugin:sc-render|load_holo', { root, request: request ?? null, shared: !!webview });
 			if (!info.shared) return { info, buffer: await fetchBytes(url('model', { path: info.path })) };
 			const buffer = await sharedBuffer(info.path);
 			return { info, buffer, release: () => webview!.releaseBuffer(buffer) };

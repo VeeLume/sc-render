@@ -9,13 +9,15 @@
 //! ```
 //!
 //! Capabilities: `sc-render:default`. Commands (`plugin:sc-render|…`):
-//! `load_model { path }` → `ModelInfo`, `load_material { path }` →
-//! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`, `load_holo { root }`
-//! → `HoloInfo` (its buffer is the `model` route with `path` = `HoloInfo.path`).
+//! `load_model { path, level? }` → `ModelInfo`, `load_material { path }` →
+//! `MaterialInfo`, `load_skeleton { path }` → `BoneInfo[]`,
+//! `load_holo { root, request? }` → `HoloInfo` (its buffer is the `model` route
+//! with `path` = `HoloInfo.path`).
 //! Scheme routes:
 //!
 //! - `scr://localhost/model?path=…`: the packed buffer of a model loaded
-//!   with `load_model`; one fetch per load, then the plugin lets go of it.
+//!   with `load_model` (`…@level` for a `level` above 0); one fetch per load,
+//!   then the plugin lets go of it.
 //! - `scr://localhost/texture?path=…&kind=color|normal|gloss|normal_gloss&max=1024`:
 //!   header (width, height, sRGB flag, level count as `u32` LE), then every
 //!   level's RGBA8, largest first, each half the one before.
@@ -28,7 +30,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sc_render::{Assets, BoneInfo, HoloInfo, MaterialInfo, ModelInfo, ScenePart, TextureKind};
+use sc_render::{
+    Assets, BoneInfo, HoloInfo, HoloRequest, MaterialInfo, ModelInfo, ScenePart, TextureKind,
+};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{Manager, Runtime, State, UriSchemeContext, UriSchemeResponder};
@@ -135,14 +139,27 @@ impl<R: Runtime, T: Manager<R>> ScRenderExt<R> for T {
 
 /// Load a geometry file; its buffer is then served at `scr://localhost/model`.
 #[tauri::command]
-async fn load_model(state: State<'_, RenderState>, path: String) -> Result<ModelInfo, String> {
+async fn load_model(
+    state: State<'_, RenderState>,
+    path: String,
+    level: Option<u8>,
+) -> Result<ModelInfo, String> {
     let assets = state.assets()?;
+    let level = level.unwrap_or(0);
     let p = path.clone();
-    let model = tauri::async_runtime::spawn_blocking(move || assets.model(&p))
+    let model = tauri::async_runtime::spawn_blocking(move || assets.model_level(&p, level))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    state.store(path.to_ascii_lowercase(), model.buffer);
+    let key = path.to_ascii_lowercase();
+    state.store(
+        if level == 0 {
+            key
+        } else {
+            format!("{key}@{level}")
+        },
+        model.buffer,
+    );
     Ok(model.info)
 }
 
@@ -156,6 +173,7 @@ async fn load_holo<R: Runtime>(
     webview: tauri::Webview<R>,
     state: State<'_, RenderState>,
     root: ScenePart,
+    request: Option<HoloRequest>,
     shared: Option<bool>,
 ) -> Result<HoloInfo, String> {
     let assets = state.assets()?;
@@ -163,7 +181,14 @@ async fn load_holo<R: Runtime>(
     let tag = id.clone();
     let shared = shared.unwrap_or(false);
     let (mut info, served) = tauri::async_runtime::spawn_blocking(move || {
-        build_holo(&webview, &assets, &root, &tag, shared)
+        build_holo(
+            &webview,
+            &assets,
+            &root,
+            &request.unwrap_or_default(),
+            &tag,
+            shared,
+        )
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -180,6 +205,7 @@ fn build_holo<R: Runtime>(
     webview: &tauri::Webview<R>,
     assets: &Assets,
     root: &ScenePart,
+    request: &HoloRequest,
     id: &str,
     shared: bool,
 ) -> (HoloInfo, Option<Vec<u8>>) {
@@ -187,7 +213,7 @@ fn build_holo<R: Runtime>(
     let mut memory = None;
     let mut failure = None;
     let (out, held, failed) = (&mut fallback, &mut memory, &mut failure);
-    let mut info = assets.holo_into(root, move |size| {
+    let mut info = assets.holo_into(root, request, move |size| {
         if shared {
             match shared::Memory::new(webview, size) {
                 Ok(m) => {

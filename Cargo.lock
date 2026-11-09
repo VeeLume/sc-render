@@ -3439,7 +3439,6 @@ dependencies = [
 [[package]]
 name = "sc-discovery"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
 dependencies = [
  "aes",
  "cbc",
@@ -3455,7 +3454,6 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3478,7 +3476,6 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
 dependencies = [
  "serde",
  "svarog-common",

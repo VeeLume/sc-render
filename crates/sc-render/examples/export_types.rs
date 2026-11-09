@@ -6,7 +6,8 @@
 //! ```
 
 use sc_render::{
-    BoneInfo, HoloInfo, MaterialInfo, ModelInfo, PartLook, SceneItem, ShipScene, TextureKind,
+    BoneInfo, HoloInfo, HoloRequest, MaterialInfo, ModelInfo, PartLook, SceneItem, ShipScene,
+    TextureKind,
 };
 use specta::TypeCollection;
 use specta_typescript::Typescript;
@@ -23,7 +24,7 @@ fn main() {
         .register::<SceneItem>()
         .register::<ShipScene>()
         .register::<HoloInfo>()
-        .register::<sc_render::HoloEdgeLevel>()
+        .register::<HoloRequest>()
         .register::<PartLook>();
     Typescript::default()
         .export_to(&path, &types)

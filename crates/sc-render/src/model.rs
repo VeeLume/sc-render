@@ -18,6 +18,8 @@ pub struct Model {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ModelInfo {
     pub path: String,
+    /// The detail level it was read at, 0 being the full mesh.
+    pub level: u8,
     /// The `.mtl` the geometry names (bare names resolved next to it).
     pub material: Option<String>,
     pub vertex_count: u32,
@@ -119,6 +121,7 @@ impl Model {
         });
         let info = ModelInfo {
             path: path.to_string(),
+            level: g.level,
             material: g.material_path(path),
             vertex_count: n as u32,
             index_count: g.indices.len() as u32,

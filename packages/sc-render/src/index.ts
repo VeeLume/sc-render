@@ -11,6 +11,7 @@ export {
 	type TextureKind,
 	type VolumeData
 } from './library';
+export { type HoloDetail } from './holo-model';
 export { ShipView, type ShipMode, type ShipViewOptions, type SliceAxis } from './ship';
 export { AXIS_LOCKS, VIEW_HINT, bindWheelZoom, viewControls, type AxisLock } from './viewControls';
 export type * from './types';

@@ -1,32 +1,54 @@
-//! A ship's hologram built in one go on every core: [`Assets::holo`] reads
-//! the scene's files, places each drawn submesh, merges each port's into one
-//! draw and finds the hull's crease lines, and hands back one buffer. The
-//! hologram needs no textures, so nothing else has to cross to the webview.
+//! A scene's hologram built in one go on every core: [`Assets::holo`] reads
+//! the scene's files at one of the game's detail levels, merges each file's
+//! drawn submeshes into one [`HoloGeometry`] with its crease lines, and says
+//! where the scene places each one ([`HoloPart`]). A file placed twenty times
+//! is stored once, and a part changes level by swapping its geometry under
+//! the same placement. The hologram needs no textures, so nothing else has to
+//! cross to the webview.
 //!
-//! Buffer layout, per [`HoloPort`], every section 4-byte aligned and
+//! Buffer layout, per [`HoloGeometry`], every section 4-byte aligned and
 //! little-endian: positions `i16 × 4` (normalised; `w` unused), normals
-//! `i8 × 4` (normalised; `w` unused), then indices (`u16`, or `u32` when
-//! [`HoloPort::wide_indices`]). Four-component formats on purpose: Direct3D
-//! has no three-component 8- or 16-bit vertex format, so ANGLE would rewrite
-//! the whole buffer on upload. A position decodes to the ship frame as
-//! `centre + xyz * scale`.
+//! `i8 × 4` (normalised; `w` unused), indices (`u16`, or `u32` when
+//! [`HoloGeometry::wide_indices`]), then crease lines as pairs of positions.
+//! Four-component formats on purpose: Direct3D has no three-component 8- or
+//! 16-bit vertex format, so ANGLE would rewrite the whole buffer on upload. A
+//! position decodes to the file's frame as `centre + xyz * scale`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use sc_extract::MeshGeometry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{Assets, BoneInfo, MaterialInfo, ScenePart};
+use crate::{Assets, BoneInfo, MaterialInfo, ScenePart, ScenePiece};
 
 /// Two faces meeting at more than this draw a crease, degrees.
 const CREASE_ANGLE: f64 = 30.0;
-/// Crease lines shorter than this share of the ship's radius are dropped: a
+/// Crease lines shorter than this share of the scene's radius are dropped: a
 /// pixel or less at the framed view, up to a full-window canvas.
 const SHORTEST_LINE: f32 = 1.0 / 600.0;
+/// Cells across the scene's radius when ordering lines: a few pixels each at
+/// card size.
+const CELLS_PER_RADIUS: f32 = 30.0;
+
+/// What to build. The default is the whole scene at full detail.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(default)]
+pub struct HoloRequest {
+    /// The game's detail level, 0 being the full mesh; a file without that
+    /// level gives its nearest finer one.
+    pub level: u8,
+    /// Build only these [`HoloGeometry::key`]s and no placements: another
+    /// level of parts already placed. `None` is the whole scene.
+    pub geometries: Option<Vec<String>>,
+    /// The [`HoloInfo::radius`] of the first build, so lines are chosen and
+    /// ordered the same way for a part built later.
+    pub radius: Option<f32>,
+}
 
 /// A built hologram and what is in it.
 pub struct Holo {
@@ -43,48 +65,63 @@ pub struct HoloInfo {
     /// The host posted the buffer as a shared buffer, tagged with `path`,
     /// instead of serving it.
     pub shared: bool,
-    /// One draw per port, the hull (path `""`) first when there is one.
-    pub ports: Vec<HoloPort>,
-    pub edges: Option<HoloEdges>,
+    /// Half the diagonal of everything placed, metres.
+    pub radius: f32,
+    /// Each distinct file once.
+    pub geometries: Vec<HoloGeometry>,
+    /// Where the geometries go, the hull's first. Empty when the request named
+    /// [`HoloRequest::geometries`].
+    pub parts: Vec<HoloPart>,
     /// What could not be drawn, and where the time went (shown in the log).
     pub notes: Vec<String>,
     pub byte_length: u32,
 }
 
-/// One port's merged geometry.
+/// One geometry at one place in the scene.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct HoloPort {
+pub struct HoloPart {
     /// Port names from the hull down, joined by `/`, lower case.
     pub path: String,
+    /// Index into [`HoloInfo::geometries`].
+    pub geometry: u32,
+    /// File frame to scene frame, 3 × 4 row-major.
+    pub at: [f32; 12],
+}
+
+/// One file's drawn submeshes at one detail level, in the file's frame.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct HoloGeometry {
+    /// Names this geometry in a [`HoloRequest`]; the same at every level.
+    pub key: String,
+    /// The level it was read at.
+    pub level: u8,
     /// Decodes a position: `centre + xyz * scale`.
     pub centre: [f32; 3],
     pub scale: f32,
-    /// Bounds in the ship frame.
     pub min: [f32; 3],
     pub max: [f32; 3],
+    /// Typical triangle edge, metres: how much screen a triangle covers, so
+    /// when this level stops being enough.
+    pub mean_edge: f32,
     pub vertex_count: u32,
     pub index_count: u32,
     pub positions_offset: u32,
     pub normals_offset: u32,
     pub indices_offset: u32,
     pub wide_indices: bool,
+    /// Crease lines: `line_vertex_count` positions, in pairs, in the same
+    /// frame as the mesh.
+    pub lines_offset: u32,
+    pub line_vertex_count: u32,
+    /// One entry per rank class, each a prefix of the lines. A class means
+    /// the same across geometries, so drawing every part up to one class
+    /// covers the whole scene evenly.
+    pub line_levels: Vec<HoloEdgeLevel>,
 }
 
-/// The crease lines: pairs of `i16 × 4` positions (normalised), ordered so
-/// that drawing any prefix covers the whole ship evenly.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct HoloEdges {
-    pub centre: [f32; 3],
-    pub scale: f32,
-    pub vertex_count: u32,
-    pub offset: u32,
-    /// Prefixes to draw, shortest prefix first.
-    pub levels: Vec<HoloEdgeLevel>,
-}
-
-/// A prefix of the crease lines.
+/// A prefix of a geometry's crease lines.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct HoloEdgeLevel {
@@ -98,14 +135,15 @@ impl Assets {
     ///
     /// ```no_run
     /// # fn demo(assets: &sc_render::Assets, ship: &sc_render::ShipScene) {
-    /// let holo = assets.holo(&ship.root);
-    /// println!("{} draws, {} bytes", holo.info.ports.len(), holo.buffer.len());
+    /// let request = sc_render::HoloRequest { level: 2, ..Default::default() };
+    /// let holo = assets.holo(&ship.root, &request);
+    /// println!("{} geometries, {} bytes", holo.info.geometries.len(), holo.buffer.len());
     /// # }
     /// ```
-    pub fn holo(&self, root: &ScenePart) -> Holo {
+    pub fn holo(&self, root: &ScenePart, request: &HoloRequest) -> Holo {
         let mut buffer = Vec::new();
         let target = &mut buffer;
-        let info = self.holo_into(root, move |size| {
+        let info = self.holo_into(root, request, move |size| {
             target.resize(size, 0);
             target.as_mut_slice()
         });
@@ -119,18 +157,24 @@ impl Assets {
     pub fn holo_into<'b>(
         &self,
         root: &ScenePart,
+        request: &HoloRequest,
         target: impl FnOnce(usize) -> &'b mut [u8],
     ) -> HoloInfo {
         let started = Instant::now();
         let mut notes = Vec::new();
+        let wanted: Option<HashSet<&str>> = request
+            .geometries
+            .as_ref()
+            .map(|keys| keys.iter().map(String::as_str).collect());
+        let wanted = wanted.as_ref();
 
         let mut files = Files::default();
-        scan(root, &mut files);
+        scan(root, wanted, &mut files);
         // Scan order, not sorted: the hull comes first, and it is the file
         // everything else waits for.
         let paths: Vec<(&String, &&str)> = files.geometry.iter().map(|(k, p)| (k, p)).collect();
         let read = across_cores(&paths, |(_, path)| {
-            MeshGeometry::read_shape(self.source(), path).map(Arc::new)
+            MeshGeometry::read_shape_level(self.source(), path, request.level).map(Arc::new)
         });
         let mut meshes = HashMap::with_capacity(paths.len());
         for ((key, path), result) in paths.iter().zip(read) {
@@ -161,22 +205,41 @@ impl Assets {
             .collect();
         let loaded = started.elapsed();
 
-        let mut placer = Placer {
-            meshes: &meshes,
-            materials: &materials,
-            skeletons: &skeletons,
-            skins: &files.skins,
-            ports: BTreeMap::new(),
-            notes: &mut notes,
-        };
-        placer.place(root, IDENTITY, "");
-        let ports: Vec<(String, Vec<Instance>)> = placer.ports.into_iter().collect();
-        let meshes_drawn: usize = ports.iter().map(|(_, l)| l.len()).sum();
+        let mut geometries = Vec::new();
+        collect(
+            root,
+            &meshes,
+            &materials,
+            wanted,
+            &mut BTreeSet::new(),
+            &mut geometries,
+            &mut notes,
+        );
+        let mut parts = Vec::new();
+        if wanted.is_none() {
+            let indices: HashMap<String, u32> = geometries
+                .iter()
+                .enumerate()
+                .map(|(i, (key, _))| (key.clone(), i as u32))
+                .collect();
+            let mut placer = Placer {
+                meshes: &meshes,
+                skeletons: &skeletons,
+                skins: &files.skins,
+                geometries: &indices,
+                parts: Vec::new(),
+                notes: &mut notes,
+            };
+            placer.place(root, IDENTITY, "");
+            parts = placer.parts;
+        }
 
-        let mut info = assemble(&ports, target);
+        let drawn = geometries.len();
+        let placed = parts.len();
+        let mut info = assemble(&geometries, parts, request.radius, target);
         notes.push(format!(
-            "holo: {} draws from {meshes_drawn} meshes, {:.0} MB",
-            info.ports.len(),
+            "holo: {drawn} geometries placed {placed} times at level {}, {:.0} MB",
+            request.level,
             f64::from(info.byte_length) / 1e6
         ));
         notes.push(format!(
@@ -233,10 +296,25 @@ struct Files<'a> {
     skins: Vec<String>,
 }
 
-fn scan<'a>(part: &'a ScenePart, files: &mut Files<'a>) {
+/// Names a piece's geometry: its file, and the material when the scene
+/// overrides it, since that decides which submeshes are drawn.
+fn geometry_key(piece: &ScenePiece) -> String {
+    let file = piece.geometry.to_ascii_lowercase();
+    match &piece.material {
+        Some(m) => format!("{file}|{}", m.to_ascii_lowercase()),
+        None => file,
+    }
+}
+
+/// With `wanted`, only those geometries' files: nothing gets placed, so the
+/// skeletons are not needed either.
+fn scan<'a>(part: &'a ScenePart, wanted: Option<&HashSet<&str>>, files: &mut Files<'a>) {
     for piece in &part.pieces {
+        if wanted.is_some_and(|w| !w.contains(geometry_key(piece).as_str())) {
+            continue;
+        }
         let key = piece.geometry.to_ascii_lowercase();
-        if key.ends_with(".skin") {
+        if key.ends_with(".skin") && wanted.is_none() {
             files.skeletons.insert(key.clone(), &piece.geometry);
             files.skins.push(key.clone());
         }
@@ -244,11 +322,76 @@ fn scan<'a>(part: &'a ScenePart, files: &mut Files<'a>) {
             files.geometry.push((key, &piece.geometry));
         }
     }
-    if let Some(s) = &part.skeleton {
+    if let (Some(s), None) = (&part.skeleton, wanted) {
         files.skeletons.insert(s.to_ascii_lowercase(), s);
     }
     for a in &part.attachments {
-        scan(&a.part, files);
+        scan(&a.part, wanted, files);
+    }
+}
+
+/// Each distinct geometry's drawn submeshes, placed in its file's frame, in
+/// scene order.
+fn collect(
+    part: &ScenePart,
+    meshes: &HashMap<String, Arc<MeshGeometry>>,
+    materials: &HashMap<String, MaterialInfo>,
+    wanted: Option<&HashSet<&str>>,
+    seen: &mut BTreeSet<String>,
+    out: &mut Vec<(String, Vec<Instance>)>,
+    notes: &mut Vec<String>,
+) {
+    for piece in &part.pieces {
+        let key = geometry_key(piece);
+        if wanted.is_some_and(|w| !w.contains(key.as_str())) || !seen.insert(key.clone()) {
+            continue;
+        }
+        let Some(g) = meshes.get(&piece.geometry.to_ascii_lowercase()) else {
+            continue;
+        };
+        let material = piece
+            .material
+            .clone()
+            .or_else(|| g.material_path(&piece.geometry))
+            .and_then(|m| materials.get(&m.to_ascii_lowercase()));
+        let Some(material) = material else { continue };
+        let nodes = node_matrices(g);
+        let mut list = Vec::new();
+        for (submesh, s) in g.submeshes.iter().enumerate() {
+            let Some(sub) = material.submaterials.get(s.material as usize) else {
+                continue;
+            };
+            if s.index_count == 0 || sub.shader == "NoDraw" || sub.name.starts_with('$') {
+                continue;
+            }
+            let range = s.first_index as usize..(s.first_index + s.index_count) as usize;
+            let valid = g
+                .indices
+                .get(range)
+                .is_some_and(|i| i.iter().all(|&v| (v as usize) < g.positions.len()));
+            if !valid {
+                notes.push(format!(
+                    "{}: submesh {submesh} out of range",
+                    piece.geometry
+                ));
+                continue;
+            }
+            list.push(Instance {
+                mesh: g.clone(),
+                submesh,
+                at: s
+                    .node
+                    .and_then(|n| nodes.get(n))
+                    .copied()
+                    .unwrap_or(IDENTITY),
+            });
+        }
+        if !list.is_empty() {
+            out.push((key, list));
+        }
+    }
+    for a in &part.attachments {
+        collect(&a.part, meshes, materials, wanted, seen, out, notes);
     }
 }
 
@@ -431,7 +574,7 @@ fn nodes_of(
     out
 }
 
-/// One submesh at one place in the ship frame.
+/// One submesh at its place in its file's frame.
 struct Instance {
     mesh: Arc<MeshGeometry>,
     submesh: usize,
@@ -447,10 +590,12 @@ impl Instance {
 
 struct Placer<'a> {
     meshes: &'a HashMap<String, Arc<MeshGeometry>>,
-    materials: &'a HashMap<String, MaterialInfo>,
     skeletons: &'a HashMap<String, Vec<BoneInfo>>,
     skins: &'a [String],
-    ports: BTreeMap<String, Vec<Instance>>,
+    /// [`geometry_key`] to index in the buffer; a piece with nothing drawn
+    /// has no entry.
+    geometries: &'a HashMap<String, u32>,
+    parts: Vec<HoloPart>,
     notes: &'a mut Vec<String>,
 }
 
@@ -493,47 +638,12 @@ impl Placer<'_> {
 
     fn place(&mut self, part: &ScenePart, world: Affine, path: &str) {
         for piece in &part.pieces {
-            let Some(g) = self.meshes.get(&piece.geometry.to_ascii_lowercase()) else {
-                continue;
-            };
-            let material = piece
-                .material
-                .clone()
-                .or_else(|| g.material_path(&piece.geometry))
-                .and_then(|m| self.materials.get(&m.to_ascii_lowercase()));
-            let Some(material) = material else { continue };
-            let nodes = node_matrices(g);
-            for (submesh, s) in g.submeshes.iter().enumerate() {
-                let Some(sub) = material.submaterials.get(s.material as usize) else {
-                    continue;
-                };
-                if sub.shader == "NoDraw" || sub.name.starts_with('$') {
-                    continue;
-                }
-                let range = s.first_index as usize..(s.first_index + s.index_count) as usize;
-                let valid = g
-                    .indices
-                    .get(range)
-                    .is_some_and(|i| i.iter().all(|&v| (v as usize) < g.positions.len()));
-                if !valid {
-                    self.notes.push(format!(
-                        "{}: submesh {submesh} out of range",
-                        piece.geometry
-                    ));
-                    continue;
-                }
-                let at = match s.node.and_then(|n| nodes.get(n)) {
-                    Some(node) => multiply(&world, node),
-                    None => world,
-                };
-                self.ports
-                    .entry(path.to_ascii_lowercase())
-                    .or_default()
-                    .push(Instance {
-                        mesh: g.clone(),
-                        submesh,
-                        at,
-                    });
+            if let Some(&geometry) = self.geometries.get(&geometry_key(piece)) {
+                self.parts.push(HoloPart {
+                    path: path.to_ascii_lowercase(),
+                    geometry,
+                    at: std::array::from_fn(|i| world[i / 4][i % 4]),
+                });
             }
         }
         if part.attachments.is_empty() {
@@ -645,6 +755,8 @@ struct Survey {
     vertices: u32,
     min: [f32; 3],
     max: [f32; 3],
+    /// Surface in square metres.
+    area: f32,
 }
 
 fn survey(inst: &Instance) -> Survey {
@@ -662,7 +774,29 @@ fn survey(inst: &Instance) -> Survey {
             }
         }
     }
-    Survey { vertices, min, max }
+    let positions = &inst.mesh.positions;
+    let area = source
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| positions[i as usize]);
+            let u: [f32; 3] = std::array::from_fn(|k| b[k] - a[k]);
+            let v: [f32; 3] = std::array::from_fn(|k| c[k] - a[k]);
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
+        })
+        .sum();
+    Survey {
+        vertices,
+        min,
+        max,
+        area,
+    }
 }
 
 /// One submesh's share of the buffer.
@@ -721,68 +855,21 @@ fn fill(job: &mut Job) {
     }
 }
 
-/// Every part's crease lines, not only the hull's: without them a dense
-/// mounted item (a Centaurus engine) reads as a flat patch over the ship.
-/// A submesh used many times (a turret, a door) is searched once, and lines
-/// too short to see at the framed view are left out.
-fn crease_lines(flat: &[&Instance], surveys: &[Survey]) -> Vec<[f32; 3]> {
-    let mut seen: HashMap<(*const MeshGeometry, usize), usize> = HashMap::new();
-    let mut distinct: Vec<&Instance> = Vec::new();
-    let mut which = Vec::with_capacity(flat.len());
-    for inst in flat {
-        let next = distinct.len();
-        let at = *seen
-            .entry((Arc::as_ptr(&inst.mesh), inst.submesh))
-            .or_insert(next);
-        if at == next {
-            distinct.push(inst);
-        }
-        which.push(at);
-    }
-    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for s in surveys.iter().filter(|s| s.vertices > 0) {
-        for k in 0..3 {
-            min[k] = min[k].min(s.min[k]);
-            max[k] = max[k].max(s.max[k]);
-        }
-    }
-    let radius = (0..3)
-        .map(|k| (max[k] - min[k]) * 0.5)
-        .map(|h| h * h)
-        .sum::<f32>()
-        .sqrt();
-    let shortest = if radius.is_finite() {
-        radius * SHORTEST_LINE
-    } else {
-        0.0
-    };
-    let pairs = across_cores(&distinct, |inst| creases(inst, shortest));
-    let jobs: Vec<(&Instance, usize)> = flat.iter().copied().zip(which).collect();
-    across_cores(&jobs, |(inst, at)| place_lines(inst, &pairs[*at], shortest)).concat()
-}
-
-/// Point pairs reordered so any prefix covers the ship evenly: the ship is cut
-/// into cells, and each cell gives up its longest line first, then its second
-/// longest, and so on. Ranking by length across the whole ship left some
-/// parts full of long lines beside bare neighbours, which read as streaks.
-/// Returns the prefix ending each rank class.
-fn spread_evenly(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
+/// Point pairs reordered so any prefix covers the geometry evenly: it is cut
+/// into cells `cell` metres wide, and each cell gives up its longest line
+/// first, then its second longest, and so on. Ranking by length across a
+/// whole ship left some parts full of long lines beside bare neighbours,
+/// which read as streaks. Returns the prefix ending each rank class, up to
+/// the last class in use.
+fn spread_evenly(points: &[[f32; 3]], cell: f32) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
     const CLASSES: usize = 32;
-    /// Cells across the ship's radius: a few pixels each at card size.
-    const CELLS_PER_RADIUS: f32 = 30.0;
     let pairs = points.as_chunks::<2>().0;
-    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let mut min = [f32::INFINITY; 3];
     for p in points {
         for k in 0..3 {
             min[k] = min[k].min(p[k]);
-            max[k] = max[k].max(p[k]);
         }
     }
-    let radius = (0..3)
-        .map(|k| ((max[k] - min[k]) * 0.5).powi(2))
-        .sum::<f32>()
-        .sqrt();
-    let cell = (radius / CELLS_PER_RADIUS).max(1e-3);
     let mut measured = Vec::with_capacity(pairs.len());
     let mut cells: QuickMap<u64, Vec<(f32, u32)>> = QuickMap::default();
     for (i, [p, q]) in pairs.iter().enumerate() {
@@ -795,12 +882,10 @@ fn spread_evenly(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
             .or_default()
             .push((len, i as u32));
     }
-    let cells: Vec<Vec<(f32, u32)>> = cells.into_values().collect();
-    let ranked = across_cores(&cells, |lines| {
-        let mut sorted = lines.clone();
-        sorted.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        sorted
-    });
+    let mut ranked: Vec<Vec<(f32, u32)>> = cells.into_values().collect();
+    for lines in &mut ranked {
+        lines.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+    }
     // Every early rank has its own class, then they widen: the budget needs
     // fine steps where it spends most of its time.
     let class_of = |rank: usize| {
@@ -825,11 +910,12 @@ fn spread_evenly(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<HoloEdgeLevel>) {
     let mut next = [0usize; CLASSES];
     let mut levels = Vec::new();
     let (mut at, mut total) = (0, 0.0);
+    let used = counts.iter().rposition(|&n| n > 0).map_or(0, |c| c + 1);
     for c in 0..CLASSES {
         next[c] = at;
         at += counts[c];
         total += lengths[c];
-        if counts[c] > 0 {
+        if c < used {
             levels.push(HoloEdgeLevel {
                 vertex_count: at as u32 * 2,
                 length: total,
@@ -867,75 +953,137 @@ fn front<'a>(slice: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
     head
 }
 
-/// Size every port and crease line, ask `target` for exactly that much
-/// memory, and fill it across every core.
+/// One geometry's bounds and surface, before anything is written.
+struct Frame {
+    vertices: u32,
+    min: [f32; 3],
+    max: [f32; 3],
+    area: f32,
+    indices: usize,
+}
+
+/// Half the diagonal of everything placed, or of the geometries as they
+/// stand when nothing is.
+fn scene_radius(frames: &[Frame], parts: &[HoloPart]) -> f32 {
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let mut grow = |p: [f32; 3]| {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    };
+    if parts.is_empty() {
+        for f in frames {
+            grow(f.min);
+            grow(f.max);
+        }
+    }
+    for part in parts {
+        let f = &frames[part.geometry as usize];
+        let at: Affine = std::array::from_fn(|r| std::array::from_fn(|c| part.at[r * 4 + c]));
+        for corner in 0..8 {
+            let p = std::array::from_fn(|k| {
+                if corner >> k & 1 == 0 {
+                    f.min[k]
+                } else {
+                    f.max[k]
+                }
+            });
+            grow(apply(&at, &p));
+        }
+    }
+    let radius = (0..3)
+        .map(|k| ((max[k] - min[k]) * 0.5).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    if radius.is_finite() { radius } else { 0.0 }
+}
+
+/// Size every geometry and its crease lines, ask `target` for exactly that
+/// much memory, and fill it across every core.
 fn assemble<'b>(
-    ports: &[(String, Vec<Instance>)],
+    geometries: &[(String, Vec<Instance>)],
+    parts: Vec<HoloPart>,
+    radius: Option<f32>,
     target: impl FnOnce(usize) -> &'b mut [u8],
 ) -> HoloInfo {
-    let flat: Vec<&Instance> = ports.iter().flat_map(|(_, list)| list.iter()).collect();
+    let flat: Vec<&Instance> = geometries
+        .iter()
+        .flat_map(|(_, list)| list.iter())
+        .collect();
     let surveys = across_cores(&flat, |inst| survey(inst));
-    let (lines, levels) = spread_evenly(&crease_lines(&flat, &surveys));
-
-    let mut info = HoloInfo::default();
-    let mut size = 0;
+    let mut frames = Vec::with_capacity(geometries.len());
     let mut at = 0;
-    for (path, list) in ports {
+    for (_, list) in geometries {
         let these = &surveys[at..at + list.len()];
         at += list.len();
-        let vertex_count: u32 = these.iter().map(|s| s.vertices).sum();
-        let index_count: usize = list.iter().map(|i| i.indices().len()).sum();
-        let (mut min, mut max) = ([0.0; 3], [0.0; 3]);
-        if vertex_count > 0 {
-            (min, max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-            for s in these {
-                for k in 0..3 {
-                    min[k] = min[k].min(s.min[k]);
-                    max[k] = max[k].max(s.max[k]);
-                }
+        let mut frame = Frame {
+            vertices: 0,
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+            area: 0.0,
+            indices: list.iter().map(|i| i.indices().len()).sum(),
+        };
+        for s in these {
+            frame.vertices += s.vertices;
+            frame.area += s.area;
+            for k in 0..3 {
+                frame.min[k] = frame.min[k].min(s.min[k]);
+                frame.max[k] = frame.max[k].max(s.max[k]);
             }
         }
-        let (centre, scale) = fit(&min, &max);
-        let wide_indices = vertex_count > u32::from(u16::MAX);
+        frames.push(frame);
+    }
+
+    let radius = radius.unwrap_or_else(|| scene_radius(&frames, &parts));
+    let shortest = radius * SHORTEST_LINE;
+    let cell = (radius / CELLS_PER_RADIUS).max(1e-3);
+    // Per submesh, so one big hull still uses every core.
+    let placed = across_cores(&flat, |inst| {
+        place_lines(inst, &creases(inst, shortest), shortest)
+    });
+    let mut placed = placed.into_iter();
+    let groups: Vec<Vec<[f32; 3]>> = geometries
+        .iter()
+        .map(|(_, list)| placed.by_ref().take(list.len()).flatten().collect())
+        .collect();
+    let lines = across_cores(&groups, |points| spread_evenly(points, cell));
+
+    let mut info = HoloInfo {
+        radius,
+        parts,
+        ..HoloInfo::default()
+    };
+    let mut size = 0;
+    for (((key, list), frame), (points, levels)) in geometries.iter().zip(&frames).zip(&lines) {
+        let (centre, scale) = fit(&frame.min, &frame.max);
+        let wide_indices = frame.vertices > u32::from(u16::MAX);
         let positions_offset = align4(size);
-        let normals_offset = align4(positions_offset + vertex_count as usize * 8);
-        let indices_offset = align4(normals_offset + vertex_count as usize * 4);
-        size = indices_offset + index_count * if wide_indices { 4 } else { 2 };
-        info.ports.push(HoloPort {
-            path: path.clone(),
+        let normals_offset = align4(positions_offset + frame.vertices as usize * 8);
+        let indices_offset = align4(normals_offset + frame.vertices as usize * 4);
+        let lines_offset =
+            align4(indices_offset + frame.indices * if wide_indices { 4 } else { 2 });
+        size = lines_offset + points.len() * 8;
+        let triangles = (frame.indices / 3).max(1) as f32;
+        info.geometries.push(HoloGeometry {
+            key: key.clone(),
+            level: list[0].mesh.level,
             centre,
             scale,
-            min,
-            max,
-            vertex_count,
-            index_count: index_count as u32,
+            min: frame.min,
+            max: frame.max,
+            mean_edge: (frame.area / triangles).sqrt(),
+            vertex_count: frame.vertices,
+            index_count: frame.indices as u32,
             positions_offset: positions_offset as u32,
             normals_offset: normals_offset as u32,
             indices_offset: indices_offset as u32,
             wide_indices,
+            lines_offset: lines_offset as u32,
+            line_vertex_count: points.len() as u32,
+            line_levels: levels.clone(),
         });
     }
-
-    let edge_frame = (!lines.is_empty()).then(|| {
-        let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        for p in &lines {
-            for k in 0..3 {
-                min[k] = min[k].min(p[k]);
-                max[k] = max[k].max(p[k]);
-            }
-        }
-        let (centre, scale) = fit(&min, &max);
-        let offset = align4(size);
-        size = offset + lines.len() * 8;
-        info.edges = Some(HoloEdges {
-            centre,
-            scale,
-            vertex_count: lines.len() as u32,
-            offset: offset as u32,
-            levels,
-        });
-        (offset, centre, scale)
-    });
     info.byte_length = size as u32;
 
     let out = target(size);
@@ -948,26 +1096,26 @@ fn assemble<'b>(
     let mut cursor = 0;
     let mut jobs = Vec::with_capacity(flat.len());
     let mut at = 0;
-    for (p, (_, list)) in info.ports.iter().zip(ports) {
-        let vertices = p.vertex_count as usize;
-        let width = if p.wide_indices { 4 } else { 2 };
+    for (g, ((_, list), (points, _))) in info.geometries.iter().zip(geometries.iter().zip(&lines)) {
+        let vertices = g.vertex_count as usize;
+        let width = if g.wide_indices { 4 } else { 2 };
         let mut positions = carve(
             &mut rest,
             &mut cursor,
-            p.positions_offset as usize,
+            g.positions_offset as usize,
             vertices * 8,
         );
         let mut normals = carve(
             &mut rest,
             &mut cursor,
-            p.normals_offset as usize,
+            g.normals_offset as usize,
             vertices * 4,
         );
         let mut indices = carve(
             &mut rest,
             &mut cursor,
-            p.indices_offset as usize,
-            p.index_count as usize * width,
+            g.indices_offset as usize,
+            g.index_count as usize * width,
         );
         let mut base = 0;
         for inst in list {
@@ -979,17 +1127,20 @@ fn assemble<'b>(
                 normals: front(&mut normals, n as usize * 4),
                 indices: front(&mut indices, inst.indices().len() * width),
                 base,
-                wide: p.wide_indices,
-                centre: p.centre,
-                scale: p.scale,
+                wide: g.wide_indices,
+                centre: g.centre,
+                scale: g.scale,
             }));
             base += n;
         }
-    }
-    if let Some((offset, centre, scale)) = edge_frame {
-        let bytes = carve(&mut rest, &mut cursor, offset, lines.len() * 8);
-        for (chunk, p) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(&lines) {
-            write_position(chunk, p, &centre, scale);
+        let bytes = carve(
+            &mut rest,
+            &mut cursor,
+            g.lines_offset as usize,
+            points.len() * 8,
+        );
+        for (chunk, p) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(points) {
+            write_position(chunk, p, &g.centre, g.scale);
         }
     }
     across_cores(&jobs, |job| fill(&mut job.lock().unwrap()));
@@ -1237,7 +1388,7 @@ mod tests {
             at(1000.0),
             at(1001.0),
         ];
-        let (out, levels) = spread_evenly(&points);
+        let (out, levels) = spread_evenly(&points, 1000.0 / 30.0);
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].vertex_count, 4);
         assert_eq!(levels[1].vertex_count, 8);
@@ -1255,6 +1406,19 @@ mod tests {
         assert_eq!(lines.len(), 2, "one line kept, as a point pair");
     }
 
+    fn build(
+        geometries: Vec<(String, Vec<Instance>)>,
+        parts: Vec<HoloPart>,
+    ) -> (HoloInfo, Vec<u8>) {
+        let mut buffer = Vec::new();
+        let target = &mut buffer;
+        let info = assemble(&geometries, parts, None, move |size| {
+            target.resize(size, 0);
+            target.as_mut_slice()
+        });
+        (info, buffer)
+    }
+
     #[test]
     fn merge_keeps_only_the_indexed_vertices_and_decodes_back() {
         let at = compose(&[10.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 1.0]);
@@ -1264,17 +1428,14 @@ mod tests {
             [0.0, 4.0, 0.0],
             [99.0, 99.0, 99.0],
         ];
-        let ports = vec![(
-            "gun".to_string(),
-            vec![instance(positions, vec![0, 1, 2], at)],
-        )];
-        let mut buffer = Vec::new();
-        let target = &mut buffer;
-        let info = assemble(&ports, move |size| {
-            target.resize(size, 0);
-            target.as_mut_slice()
-        });
-        let m = &info.ports[0];
+        let (info, buffer) = build(
+            vec![(
+                "gun".to_string(),
+                vec![instance(positions, vec![0, 1, 2], at)],
+            )],
+            Vec::new(),
+        );
+        let m = &info.geometries[0];
         assert_eq!(m.vertex_count, 3);
         assert!(!m.wide_indices);
         assert_eq!(m.min, [10.0, 0.0, 0.0]);
@@ -1300,20 +1461,69 @@ mod tests {
             vec![2, 1, 0],
             IDENTITY,
         );
-        let ports = vec![("gun".to_string(), vec![a, b])];
-        let mut buffer = Vec::new();
-        let target = &mut buffer;
-        let info = assemble(&ports, move |size| {
-            target.resize(size, 0);
-            target.as_mut_slice()
-        });
-        let m = &info.ports[0];
+        let (info, buffer) = build(vec![("gun".to_string(), vec![a, b])], Vec::new());
+        let m = &info.geometries[0];
         assert_eq!((m.vertex_count, m.index_count), (6, 6));
         let index = |i: usize| {
             let at = m.indices_offset as usize + i * 2;
             u16::from_le_bytes([buffer[at], buffer[at + 1]])
         };
         assert_eq!((0..6).map(index).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_geometry_is_stored_once_however_often_it_is_placed() {
+        let square = instance(
+            vec![
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+                [0.0, 10.0, 0.0],
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+            IDENTITY,
+        );
+        let placed = |x: f32| HoloPart {
+            path: format!("gun_{x}"),
+            geometry: 0,
+            at: [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        };
+        let (once, _) = build(vec![("gun".to_string(), vec![square])], vec![placed(0.0)]);
+        let square = instance(
+            vec![
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+                [0.0, 10.0, 0.0],
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+            IDENTITY,
+        );
+        let (twice, _) = build(
+            vec![("gun".to_string(), vec![square])],
+            vec![placed(0.0), placed(100.0)],
+        );
+        assert_eq!(once.byte_length, twice.byte_length);
+        assert_eq!(twice.parts.len(), 2);
+        assert!(
+            twice.radius > once.radius,
+            "the radius sees every placement"
+        );
+        assert_eq!(
+            twice.geometries[0].line_vertex_count, 8,
+            "the four rim edges"
+        );
+        assert!((twice.geometries[0].mean_edge - 50f32.sqrt()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn line_classes_mean_the_same_across_geometries() {
+        // One line in rank 0 only: class 1 is simply absent, not renumbered.
+        let at = |x: f32| [x, 0.0, 0.0];
+        let (_, levels) = spread_evenly(&[at(0.0), at(4.0)], 100.0);
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].vertex_count, 2);
+        assert!((levels[0].length - 4.0).abs() < 1e-3);
     }
 
     #[test]

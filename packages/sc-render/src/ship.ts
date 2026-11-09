@@ -5,15 +5,17 @@
 // untransformed. A frame is drawn only when something changed.
 //
 // The holo comes from the source in one go, built across every core
-// (`Assets::holo`): no textures, one draw per port. The materials are built
-// on first use.
+// (`Assets::holo`): no textures, one draw per placed part. Parts then change
+// detail on their own as the view closes in (see `holo-model.ts`). The
+// materials are built on first use.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildScene } from './cell';
 import { HOLO_BACKGROUND, HOLO_EDGE, HOLO_GRID, HOLO_HULL, MAX_BLEND, holoMaterial, setHoloOpacity } from './holo';
+import { COARSEST_LEVEL, HoloModel, type HoloDetail } from './holo-model';
 import { Library, type RenderSource } from './library';
-import type { HoloEdgeLevel, ScenePart, ShipScene } from './types';
+import type { ScenePart, ShipScene } from './types';
 
 /**
  * How the ship is drawn: a hologram, its materials, a colour per damage part
@@ -31,6 +33,8 @@ export interface ShipViewOptions {
 	background?: boolean;
 	/** The holo's floor grid. Default on. */
 	grid?: boolean;
+	/** The holo's level of detail; `auto`, the default, follows the view. */
+	detail?: HoloDetail;
 }
 
 const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
@@ -90,14 +94,6 @@ function byPort(root: THREE.Object3D): Map<string, THREE.Mesh[]> {
 	return out;
 }
 
-/** Sit a mesh whose positions are quantised to -1..1 where `centre + xyz * scale` says. */
-function placeDecoded(o: THREE.Object3D, centre: THREE.Vector3, scale: number) {
-	o.position.copy(centre);
-	o.scale.setScalar(scale);
-	o.updateMatrix();
-	o.matrixAutoUpdate = false;
-}
-
 /** Free `root`'s geometries and materials on the GPU (textures stay the Library's). */
 function disposeTree(root: THREE.Object3D) {
 	root.traverse((o) => {
@@ -109,29 +105,6 @@ function disposeTree(root: THREE.Object3D) {
 	});
 }
 
-/** One port's meshes merged into one draw. */
-interface PortDraw {
-	path: string;
-	mesh: THREE.Mesh;
-	/** Ship frame. */
-	bounds: THREE.Box3;
-}
-
-/** The merged holo model. */
-interface HoloModel {
-	root: THREE.Group;
-	/** The hull first, when there is one. */
-	ports: PortDraw[];
-	/** Crease lines in front of the ship's skin. */
-	edges: THREE.LineSegments | null;
-	/** The same lines behind it, faint. */
-	hiddenEdges: THREE.LineSegments | null;
-	/** Prefixes of the lines, longest lines first. */
-	levels: HoloEdgeLevel[];
-	/** Gives back the buffer the geometry reads from. */
-	release?: () => void;
-}
-
 interface HullMesh {
 	mesh: THREE.Mesh;
 	original: THREE.Material | THREE.Material[];
@@ -139,7 +112,7 @@ interface HullMesh {
 }
 
 /** The materials model. */
-interface DetailModel {
+interface TexturedModel {
 	root: THREE.Group;
 	hull: HullMesh[];
 }
@@ -179,8 +152,10 @@ export class ShipView {
 	private disposed = false;
 
 	private holo: HoloModel | null = null;
-	private detail: DetailModel | null = null;
-	private detailBuilding: Promise<void> | null = null;
+	private holoDetail: HoloDetail;
+	private frameQueued = false;
+	private textured: TexturedModel | null = null;
+	private texturedBuilding: Promise<void> | null = null;
 	private lit = false;
 	private warmth: { geometry: THREE.BufferGeometry; lines: THREE.Material } | null = null;
 	private litFrame: THREE.LineSegments | null = null;
@@ -211,6 +186,7 @@ export class ShipView {
 		this.mode = options.mode ?? 'holo';
 		this.showBackground = options.background ?? true;
 		this.showGrid = options.grid ?? true;
+		this.holoDetail = options.detail ?? 'auto';
 		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 		this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -238,10 +214,10 @@ export class ShipView {
 		for (const n of ship.notes) log.push(`note: ${n}`);
 		if (this.mode === 'holo') this.warmShaders();
 		const holo = this.mode === 'holo' ? await this.buildHolo(ship, log) : null;
-		const detail = this.mode === 'holo' ? null : await this.buildDetail(ship, log);
+		const textured = this.mode === 'holo' ? null : await this.buildTextured(ship, log);
 		if (generation !== this.generation || this.disposed) {
-			if (holo) this.discardHolo(holo);
-			if (detail) disposeTree(detail.root);
+			holo?.dispose();
+			if (textured) disposeTree(textured.root);
 			log.push('superseded by a newer render');
 			return log;
 		}
@@ -249,9 +225,9 @@ export class ShipView {
 		this.ship = ship;
 		this.parts = [...new Set(ship.node_parts.map((n) => n.part))].filter((p) => p);
 		this.holo = holo;
-		this.detail = detail;
+		this.textured = textured;
 		if (holo) this.scene.add(holo.root);
-		if (detail) this.scene.add(detail.root);
+		if (textured) this.scene.add(textured.root);
 		this.measure();
 		this.buildGrid();
 		this.applyMode();
@@ -262,6 +238,25 @@ export class ShipView {
 		this.applyMode();
 		log.push(this.stats());
 		return log;
+	}
+
+	/**
+	 * How much geometry the holo draws: `auto` follows the view part by part,
+	 * a number holds every part at that level (0 is the full mesh).
+	 */
+	setDetail(detail: HoloDetail) {
+		this.holoDetail = detail;
+		this.holo?.setChoice(detail);
+	}
+
+	/** Each drawn port's level right now, by port path (0 is the full mesh). */
+	get detail(): Map<string, number> {
+		return this.holo?.levels() ?? new Map();
+	}
+
+	/** Resolves once the holo has nothing left to fetch, upload or fade in. */
+	settled(): Promise<void> {
+		return this.holo?.settled() ?? Promise.resolve();
 	}
 
 	/** What the last frame cost. */
@@ -282,18 +277,18 @@ export class ShipView {
 		const log: string[] = [];
 		if (mode === 'holo' && !this.holo) {
 			const holo = await this.buildHolo(ship, log);
-			if (generation !== this.generation || this.disposed) return this.discardHolo(holo);
+			if (generation !== this.generation || this.disposed) return holo.dispose();
 			this.holo = holo;
 			this.scene.add(holo.root);
 			this.measure();
-		} else if (mode !== 'holo' && !this.detail) {
-			this.detailBuilding ??= this.buildDetail(ship, log).then((detail) => {
-				this.detailBuilding = null;
-				if (generation !== this.generation || this.disposed) return disposeTree(detail.root);
-				this.detail = detail;
-				this.scene.add(detail.root);
+		} else if (mode !== 'holo' && !this.textured) {
+			this.texturedBuilding ??= this.buildTextured(ship, log).then((textured) => {
+				this.texturedBuilding = null;
+				if (generation !== this.generation || this.disposed) return disposeTree(textured.root);
+				this.textured = textured;
+				this.scene.add(textured.root);
 			});
-			await this.detailBuilding;
+			await this.texturedBuilding;
 		}
 		if (generation === this.generation && !this.disposed) this.applyMode();
 	}
@@ -343,10 +338,10 @@ export class ShipView {
 		const ports = this.holo?.ports.filter((p) => p.path && (!this.portColours.size || this.portColours.has(p.path))) ?? [];
 		const ray = this.rayAt(x, y);
 		const hit = new THREE.Raycaster(ray.origin, ray.direction).intersectObjects(
-			ports.map((p) => p.mesh),
+			ports.map((p) => p.pick),
 			false
 		)[0];
-		return hit ? (ports.find((p) => p.mesh === hit.object)?.path ?? null) : null;
+		return hit ? (ports.find((p) => p.pick === hit.object)?.path ?? null) : null;
 	}
 
 	/** The view ray through canvas pixel (`x`, `y`), ship frame. */
@@ -406,8 +401,23 @@ export class ShipView {
 
 	render() {
 		if (this.disposed) return;
+		const holo = this.holo;
+		holo?.beforeFrame(performance.now());
 		this.fitEdges();
 		this.renderer.render(this.scene, this.camera);
+		if (!holo) return;
+		holo.afterFrame(this.camera, this.canvas.clientHeight, this.camera.position.distanceTo(this.controls.target));
+		if (holo.busy) this.queueFrame();
+	}
+
+	/** Another frame soon: the holo has work to bring in. */
+	private queueFrame() {
+		if (this.frameQueued) return;
+		this.frameQueued = true;
+		requestAnimationFrame(() => {
+			this.frameQueued = false;
+			this.render();
+		});
 	}
 
 	/**
@@ -428,61 +438,16 @@ export class ShipView {
 	}
 
 	private async buildHolo(ship: ShipScene, log: string[]): Promise<HoloModel> {
-		const { info, buffer, release } = await this.lib.source.holo(ship.root);
-		log.push(...info.notes);
-		const root = new THREE.Group();
-		const ports = info.ports.map((p): PortDraw => {
-			const g = new THREE.BufferGeometry();
-			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, p.positions_offset, p.vertex_count * 4), 4, true));
-			g.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(buffer, p.normals_offset, p.vertex_count * 4), 4, true));
-			const index = p.wide_indices ? new Uint32Array(buffer, p.indices_offset, p.index_count) : new Uint16Array(buffer, p.indices_offset, p.index_count);
-			g.setIndex(new THREE.BufferAttribute(index, 1));
-			const bounds = new THREE.Box3(new THREE.Vector3(...p.min), new THREE.Vector3(...p.max));
-			const centre = new THREE.Vector3(...p.centre);
-			g.boundingBox = bounds.clone().translate(centre.clone().negate());
-			g.boundingBox.min.divideScalar(p.scale);
-			g.boundingBox.max.divideScalar(p.scale);
-			g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
-			const mesh = new THREE.Mesh(g);
-			placeDecoded(mesh, centre, p.scale);
-			root.add(mesh);
-			return { path: p.path, mesh, bounds };
-		});
-		let edges: THREE.LineSegments | null = null;
-		let hiddenEdges: THREE.LineSegments | null = null;
-		let levels: HoloEdgeLevel[] = [];
-		if (info.edges) {
-			const e = info.edges;
-			const g = new THREE.BufferGeometry();
-			g.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buffer, e.offset, e.vertex_count * 4), 4, true));
-			// Two geometries over one attribute: each shows its own prefix.
-			const behind = new THREE.BufferGeometry();
-			behind.setAttribute('position', g.getAttribute('position'));
-			edges = new THREE.LineSegments(g, this.edgeMaterial(THREE.LessEqualDepth));
-			hiddenEdges = new THREE.LineSegments(behind, this.edgeMaterial(THREE.GreaterDepth));
-			levels = e.levels;
-			for (const lines of [edges, hiddenEdges]) {
-				// The lines span the ship, so they are never culled.
-				lines.frustumCulled = false;
-				lines.renderOrder = 1;
-				placeDecoded(lines, new THREE.Vector3(...e.centre), e.scale);
-				root.add(lines);
-			}
-		}
-		// The ship's skin into the depth buffer first, so the fill is one layer
-		// and lines can tell whether they are in front of it.
-		const skin = this.depthMaterial();
-		for (const { mesh } of ports) {
-			const depth = new THREE.Mesh(mesh.geometry, skin);
-			depth.renderOrder = -1;
-			depth.matrix.copy(mesh.matrix);
-			depth.matrixAutoUpdate = false;
-			root.add(depth);
-		}
-		return { root, ports, edges, hiddenEdges, levels, release };
+		const level = this.holoDetail === 'auto' ? COARSEST_LEVEL : this.holoDetail;
+		const opened = await this.lib.source.holo(ship.root, { level });
+		log.push(...opened.info.notes);
+		const look = { depth: this.depthMaterial(), lines: (depthFunc: THREE.DepthModes) => this.edgeMaterial(depthFunc) };
+		const holo = new HoloModel(this.lib.source, ship.root, opened, look, this.holoDetail);
+		holo.onWork = () => this.queueFrame();
+		return holo;
 	}
 
-	private async buildDetail(ship: ShipScene, log: string[]): Promise<DetailModel> {
+	private async buildTextured(ship: ShipScene, log: string[]): Promise<TexturedModel> {
 		const root = await buildScene(this.lib, ship.root, log);
 		this.clipAll(root);
 		const byNode = new Map(ship.node_parts.map((n) => [n.node.toLowerCase(), n.part]));
@@ -553,32 +518,22 @@ export class ShipView {
 		log.push(`interior: ${placements.size} geometry files, ${this.batches.length} instanced draws`);
 	}
 
-	private discardHolo(holo: HoloModel) {
-		disposeTree(holo.root);
-		holo.release?.();
-	}
-
 	/** Remove and free everything of the last ship. */
 	private clearModels() {
 		this.clearLitFrame();
-		for (const root of [this.holo?.root, this.detail?.root]) {
+		for (const root of [this.holo?.root, this.textured?.root]) {
 			if (!root) continue;
 			this.scene.remove(root);
 		}
-		// The merged meshes' materials are shared and live in `materials`.
-		if (this.holo) {
-			for (const p of this.holo.ports) p.mesh.geometry.dispose();
-			if (this.holo.edges) disposeTree(this.holo.edges);
-			if (this.holo.hiddenEdges) disposeTree(this.holo.hiddenEdges);
-			this.holo.release?.();
-		}
-		if (this.detail) {
+		// The holo's materials are shared and live in `materials`.
+		this.holo?.dispose();
+		if (this.textured) {
 			// Back on their own materials, so those are freed too.
-			for (const h of this.detail.hull) h.mesh.material = h.original;
-			disposeTree(this.detail.root);
+			for (const h of this.textured.hull) h.mesh.material = h.original;
+			disposeTree(this.textured.root);
 		}
 		this.holo = null;
-		this.detail = null;
+		this.textured = null;
 		for (const b of this.batches) {
 			b.mesh.dispose();
 			b.mesh.geometry.dispose();
@@ -595,12 +550,12 @@ export class ShipView {
 	private measure() {
 		const box = new THREE.Box3();
 		if (this.holo) {
-			const hull = this.holo.ports.find((p) => p.path === '');
-			for (const p of hull ? [hull] : this.holo.ports) box.union(p.bounds);
-		} else if (this.detail) {
+			const hull = this.holo.ports.filter((p) => p.path === '');
+			for (const p of hull.length ? hull : this.holo.ports) box.union(p.bounds);
+		} else if (this.textured) {
 			const v = new THREE.Box3();
-			this.detail.root.updateMatrixWorld(true);
-			for (const h of this.detail.hull) box.union(v.copy(h.mesh.geometry.boundingBox!).applyMatrix4(h.mesh.matrixWorld));
+			this.textured.root.updateMatrixWorld(true);
+			for (const h of this.textured.hull) box.union(v.copy(h.mesh.geometry.boundingBox!).applyMatrix4(h.mesh.matrixWorld));
 		}
 		this.bounds.copy(box);
 		if (!box.isEmpty()) {
@@ -657,16 +612,13 @@ export class ShipView {
 
 	/** The crease lines' strength for how many pixels a metre covers now, dimmed while a part is lit. */
 	private fitEdges() {
-		const edges = this.holo?.edges;
-		const hidden = this.holo?.hiddenEdges;
-		if (!edges || !hidden) return;
+		const holo = this.holo;
+		if (!holo) return;
 		const distance = this.camera.position.distanceTo(this.controls.target);
 		const metresTall = (2 * distance * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) / this.camera.zoom;
 		const pixelsPerMetre = this.canvas.clientHeight / metresTall;
 		const strength = Math.min(EDGE_STRENGTH.max, EDGE_STRENGTH.base + pixelsPerMetre * EDGE_STRENGTH.perPixelPerMetre);
 		const focus = this.highlights.length ? FOCUS_HULL : 1;
-		(edges.material as THREE.LineBasicMaterial).opacity = strength * focus;
-		(hidden.material as THREE.LineBasicMaterial).opacity = strength * focus * HIDDEN_EDGES;
 		const size = this.bounds.getSize(new THREE.Vector3());
 		// A box's mean projected area is a quarter of its surface.
 		const area = Math.max(1e-3, (size.x * size.y + size.y * size.z + size.z * size.x) / 2);
@@ -674,15 +626,8 @@ export class ShipView {
 		// outline beats an even scatter of its pieces, and there is room for it.
 		const framed = this.canvas.clientHeight / (1.6 * this.radius);
 		const closeness = Math.max(1, pixelsPerMetre / framed) ** 2;
-		const prefix = (ink: number) => {
-			const budget = ink * closeness * area * pixelsPerMetre;
-			const levels = this.holo?.levels ?? [];
-			let count = levels[0]?.vertex_count ?? 0;
-			for (const l of levels) if (l.length <= budget) count = l.vertex_count;
-			return count;
-		};
-		edges.geometry.setDrawRange(0, prefix(EDGE_INK));
-		hidden.geometry.setDrawRange(0, prefix(HIDDEN_INK));
+		const budget = (ink: number) => ink * closeness * area * pixelsPerMetre;
+		holo.fitLines(strength * focus, strength * focus * HIDDEN_EDGES, budget(EDGE_INK), budget(HIDDEN_INK));
 	}
 
 	/** Writes the ship's skin to depth only, nudged back so lines on it stay in front. */
@@ -759,15 +704,18 @@ export class ShipView {
 		const holo = this.mode === 'holo';
 		if (!holo) this.ensureLit();
 		this.updateInterior();
-		if (this.holo) this.holo.root.visible = holo;
-		if (this.detail) this.detail.root.visible = !holo;
+		if (this.holo) {
+			this.holo.root.visible = holo;
+			this.holo.setActive(holo);
+		}
+		if (this.textured) this.textured.root.visible = !holo;
 		if (this.grid) this.grid.visible = holo;
 		this.scene.background = holo && this.showBackground ? new THREE.Color(HOLO_BACKGROUND) : null;
 		const planes = this.planes;
 		const interiorHolo = this.material('holo-interior', () => holoMaterial(HOLO_HULL, { opacity: 0.1, ghost: true, base: 0.35, rim: 0.7, planes }));
 		for (const b of this.batches) b.mesh.material = holo ? interiorHolo : b.original;
 		this.colourPorts();
-		for (const h of this.detail?.hull ?? []) {
+		for (const h of this.textured?.hull ?? []) {
 			const i = h.part ? this.parts.indexOf(h.part) : -1;
 			if (this.mode === 'materials' || holo) h.mesh.material = h.original;
 			else if (this.mode === 'parts')

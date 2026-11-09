@@ -10,7 +10,7 @@ export type BoneInfo = { name: string; parent: number | null; position: [number,
 rotation: [number, number, number, number] }
 
 /**
- * A prefix of the crease lines.
+ * A prefix of a geometry's crease lines.
  */
 export type HoloEdgeLevel = { vertex_count: number; 
 /**
@@ -19,14 +19,37 @@ export type HoloEdgeLevel = { vertex_count: number;
 length: number }
 
 /**
- * The crease lines: pairs of `i16 × 4` positions (normalised), longest
- * first, so drawing a prefix keeps the lines that carry the shape.
+ * One file's drawn submeshes at one detail level, in the file's frame.
  */
-export type HoloEdges = { centre: [number, number, number]; scale: number; vertex_count: number; offset: number; 
+export type HoloGeometry = { 
 /**
- * Prefixes to draw, shortest prefix first.
+ * Names this geometry in a [`HoloRequest`]; the same at every level.
  */
-levels: HoloEdgeLevel[] }
+key: string; 
+/**
+ * The level it was read at.
+ */
+level: number; 
+/**
+ * Decodes a position: `centre + xyz * scale`.
+ */
+centre: [number, number, number]; scale: number; min: [number, number, number]; max: [number, number, number]; 
+/**
+ * Typical triangle edge, metres: how much screen a triangle covers, so
+ * when this level stops being enough.
+ */
+mean_edge: number; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number; indices_offset: number; wide_indices: boolean; 
+/**
+ * Crease lines: `line_vertex_count` positions, in pairs, in the same
+ * frame as the mesh.
+ */
+lines_offset: number; line_vertex_count: number; 
+/**
+ * One entry per rank class, each a prefix of the lines. A class means
+ * the same across geometries, so drawing every part up to one class
+ * covers the whole scene evenly.
+ */
+line_levels: HoloEdgeLevel[] }
 
 /**
  * What a hologram's buffer holds. See the module docs for the layout.
@@ -42,30 +65,59 @@ path: string;
  */
 shared: boolean; 
 /**
- * One draw per port, the hull (path `""`) first when there is one.
+ * Half the diagonal of everything placed, metres.
  */
-ports: HoloPort[]; edges: HoloEdges | null; 
+radius: number; 
+/**
+ * Each distinct file once.
+ */
+geometries: HoloGeometry[]; 
+/**
+ * Where the geometries go, the hull's first. Empty when the request named
+ * [`HoloRequest::geometries`].
+ */
+parts: HoloPart[]; 
 /**
  * What could not be drawn, and where the time went (shown in the log).
  */
 notes: string[]; byte_length: number }
 
 /**
- * One port's merged geometry.
+ * One geometry at one place in the scene.
  */
-export type HoloPort = { 
+export type HoloPart = { 
 /**
  * Port names from the hull down, joined by `/`, lower case.
  */
 path: string; 
 /**
- * Decodes a position: `centre + xyz * scale`.
+ * Index into [`HoloInfo::geometries`].
  */
-centre: [number, number, number]; scale: number; 
+geometry: number; 
 /**
- * Bounds in the ship frame.
+ * File frame to scene frame, 3 × 4 row-major.
  */
-min: [number, number, number]; max: [number, number, number]; vertex_count: number; index_count: number; positions_offset: number; normals_offset: number; indices_offset: number; wide_indices: boolean }
+at: [number, number, number, number, number, number, number, number, number, number, number, number] }
+
+/**
+ * What to build. The default is the whole scene at full detail.
+ */
+export type HoloRequest = { 
+/**
+ * The game's detail level, 0 being the full mesh; a file without that
+ * level gives its nearest finer one.
+ */
+level: number; 
+/**
+ * Build only these [`HoloGeometry::key`]s and no placements: another
+ * level of parts already placed. `None` is the whole scene.
+ */
+geometries: string[] | null; 
+/**
+ * The [`HoloInfo::radius`] of the first build, so lines are chosen and
+ * ordered the same way for a part built later.
+ */
+radius: number | null }
 
 /**
  * One placed interior geometry file.
@@ -84,6 +136,10 @@ export type LayerInfo = { name: string; path: string; submaterial: string; tint:
 export type MaterialInfo = { path: string; submaterials: SubMaterialInfo[] }
 
 export type ModelInfo = { path: string; 
+/**
+ * The detail level it was read at, 0 being the full mesh.
+ */
+level: number; 
 /**
  * The `.mtl` the geometry names (bare names resolved next to it).
  */

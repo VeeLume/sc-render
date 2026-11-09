@@ -51,10 +51,13 @@ Nothing here may ship game data: every asset is read from the local install at r
   together, to the tag the consuming app pins (`Scene` crosses the crate boundary, and two
   holotable versions make it two types). Compare `scene_probe` output (lab-catalog example)
   before and after.
-- **A view draws on demand.** No animation loop: a frame comes from orbit, resize or a setter.
-  Hosts are resident tray apps; `dispose` must free the GPU memory.
+- **A view draws on demand.** No animation loop: a frame comes from orbit, resize or a setter,
+  and from the holo only while parts are swapping in or fading. Hosts are resident tray apps;
+  `dispose` must free the GPU memory.
 - **The holo is built in Rust** (`Assets::holo`) and posted to WebView2 as a shared buffer: one
-  file at a time over the bridge cost a capital ship 6 to 13 s. Probe:
+  file at a time over the bridge cost a capital ship 6 to 13 s. It opens at the game's level 2
+  and each part refines on its own (`holo-model.ts`; `REFINE_PIXELS` is the one tuned number).
+  Probe:
   `cargo run -p lab-catalog --release --example ship_load_cost -- --all`. A Tauri bump can move
   `webview2-com`; the plugin's own dependency must match it.
 - The lab's dev run renders a fixed item set and writes snapshots and logs to

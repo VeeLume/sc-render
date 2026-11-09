@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use lab_catalog::Catalog;
 use sc_extract::MeshGeometry;
-use sc_render::{Assets, ScenePart, ShipScene};
+use sc_render::{Assets, HoloRequest, ScenePart, ShipScene};
 
 fn collect(p: &ScenePart, pieces: &mut usize, files: &mut BTreeMap<String, String>) {
     for piece in &p.pieces {
@@ -74,11 +74,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let scene = catalog.ship_scene(&assets, &hit.guid)?;
             let scene = ShipScene::new(&scene, hit.label.clone(), |g| g.to_string());
-            let _ = assets.holo(&scene.root);
+            let request = HoloRequest {
+                level: 2,
+                ..HoloRequest::default()
+            };
+            let _ = assets.holo(&scene.root, &request);
             let mut runs = Vec::new();
             for _ in 0..7 {
                 let t = Instant::now();
-                let holo = assets.holo(&scene.root);
+                let holo = assets.holo(&scene.root, &request);
                 runs.push((
                     t.elapsed().as_millis(),
                     holo.info.notes.last().cloned().unwrap_or_default(),
@@ -96,13 +100,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scene = catalog.ship_scene(&assets, &s.guid)?;
             let scene = ShipScene::new(&scene, s.label.clone(), |g| g.to_string());
             // The first pass warms the OS file cache, as an earlier open has.
+            let request = HoloRequest {
+                level: 2,
+                ..HoloRequest::default()
+            };
             let t = Instant::now();
-            let cold = assets.holo(&scene.root);
+            let cold = assets.holo(&scene.root, &request);
             let first = t.elapsed();
             drop(cold);
             let t = Instant::now();
-            let holo = assets.holo(&scene.root);
-            let triangles: u32 = holo.info.ports.iter().map(|p| p.index_count / 3).sum();
+            let holo = assets.holo(&scene.root, &request);
+            let triangles: u32 = holo
+                .info
+                .parts
+                .iter()
+                .map(|p| holo.info.geometries[p.geometry as usize].index_count / 3)
+                .sum();
             let phases = holo.info.notes.last().cloned().unwrap_or_default();
             let phases = phases.trim_start_matches("holo: ").to_string();
             let label = format!(
