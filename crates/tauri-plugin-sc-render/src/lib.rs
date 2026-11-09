@@ -24,9 +24,14 @@
 //! - `scr://localhost/hue_lut`: header (width, height, depth as `u32` LE),
 //!   then RGBA8.
 //!
+//! Every command and route also takes `install`, the
+//! `ShipScene.install` the request is for; without it they read the primary
+//! install. See [`RenderState::assets_at`].
+//!
 //! A resident host calls [`RenderState::evict`] when its window goes away.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -56,13 +61,20 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .build()
 }
 
-/// The install the renderer reads, opened on first use, and the model
-/// buffers waiting to be fetched.
+/// The one install open at a time, the ones the host has named, and the
+/// model buffers waiting to be fetched.
 #[derive(Default)]
 pub struct RenderState {
-    assets: Mutex<Option<Arc<Assets>>>,
+    opened: Mutex<Option<Opened>>,
+    known: Mutex<HashSet<String>>,
     buffers: Mutex<HashMap<String, Pending>>,
     holos: AtomicU64,
+}
+
+/// The open install: `None` is the primary one.
+struct Opened {
+    install: Option<String>,
+    assets: Arc<Assets>,
 }
 
 /// A loaded model's buffer and how many loads have yet to fetch it.
@@ -76,17 +88,71 @@ impl RenderState {
     /// [`evict`](Self::evict). A host that reads the DataCore too shares it
     /// from here, and does not keep the `Arc` longer than it needs it.
     pub fn assets(&self) -> Result<Arc<Assets>, String> {
-        let mut assets = self.assets.lock().unwrap();
-        if let Some(a) = assets.as_ref() {
-            return Ok(a.clone());
+        self.open(None)
+    }
+
+    /// The install of the `Data.p4k` at `p4k`, for a host that shows more
+    /// than one channel. Only one install stays open: asking for another
+    /// closes this one once the loads reading it finish.
+    ///
+    /// Stamp what is built from it with
+    /// [`ShipScene::read_from`](sc_render::ShipScene::read_from). The view
+    /// then names this install in everything it asks the plugin for, so a
+    /// detail level fetched after a channel switch still reads the archive
+    /// its ship came from. The page can only name installs passed here.
+    ///
+    /// ```no_run
+    /// # fn demo<R: tauri::Runtime>(app: &tauri::AppHandle<R>, scene: tauri_plugin_sc_render::sc_render::ShipScene) -> Result<(), String> {
+    /// use tauri_plugin_sc_render::ScRenderExt;
+    /// let p4k = std::path::Path::new(r"C:\Games\StarCitizen\PTU\Data.p4k");
+    /// let assets = app.sc_render().assets_at(p4k)?;
+    /// let ship = scene.read_from(&assets);
+    /// # let _ = ship;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn assets_at(&self, p4k: &Path) -> Result<Arc<Assets>, String> {
+        let install = p4k.to_string_lossy().into_owned();
+        let assets = self.open(Some(&install))?;
+        self.known.lock().unwrap().insert(install);
+        Ok(assets)
+    }
+
+    /// The install a page request names.
+    fn requested(&self, install: Option<&str>) -> Result<Arc<Assets>, String> {
+        if let Some(i) = install
+            && !self.known.lock().unwrap().contains(i)
+        {
+            return Err(format!("the host has not opened this install: {i}"));
         }
-        let opened = Arc::new(Assets::open().map_err(|e| e.to_string())?);
-        *assets = Some(opened.clone());
-        Ok(opened)
+        self.open(install)
+    }
+
+    fn open(&self, install: Option<&str>) -> Result<Arc<Assets>, String> {
+        let mut slot = self.opened.lock().unwrap();
+        if let Some(o) = slot.as_ref()
+            && o.install.as_deref() == install
+        {
+            return Ok(o.assets.clone());
+        }
+        // Before the new one opens: two archives never need to be held.
+        *slot = None;
+        let assets = Arc::new(
+            match install {
+                Some(p4k) => Assets::open_at(Path::new(p4k)),
+                None => Assets::open(),
+            }
+            .map_err(|e| e.to_string())?,
+        );
+        *slot = Some(Opened {
+            install: install.map(str::to_string),
+            assets: assets.clone(),
+        });
+        Ok(assets)
     }
 
     /// Let go of the install, its decoded textures and any model buffer not
-    /// fetched yet. The next call reopens the install. A load in flight
+    /// fetched yet. The next call reopens what it asks for. A load in flight
     /// finishes on the `Arc` it holds; a model fetched after this fails, so
     /// call it when no view is drawing.
     ///
@@ -97,7 +163,7 @@ impl RenderState {
     /// # }
     /// ```
     pub fn evict(&self) {
-        self.assets.lock().unwrap().take();
+        self.opened.lock().unwrap().take();
         self.buffers.lock().unwrap().clear();
     }
 
@@ -113,16 +179,24 @@ impl RenderState {
     }
 
     /// The buffer of a load, released when the last load has fetched it.
-    fn take_buffer(&self, path: &str) -> Option<Vec<u8>> {
+    fn take_buffer(&self, key: &str) -> Option<Vec<u8>> {
         let mut buffers = self.buffers.lock().unwrap();
-        let key = path.to_ascii_lowercase();
-        let pending = buffers.get_mut(&key)?;
+        let pending = buffers.get_mut(key)?;
         pending.loads -= 1;
         if pending.loads == 0 {
-            let buffer = buffers.remove(&key)?.buffer;
+            let buffer = buffers.remove(key)?.buffer;
             return Some(Arc::try_unwrap(buffer).unwrap_or_else(|b| b.as_ref().clone()));
         }
         Some(pending.buffer.as_ref().clone())
+    }
+}
+
+/// Where a model's buffer waits. The same file in two installs is two buffers.
+fn buffer_key(install: Option<&str>, path: &str) -> String {
+    let path = path.to_ascii_lowercase();
+    match install {
+        Some(install) => format!("{install}|{path}"),
+        None => path,
     }
 }
 
@@ -143,23 +217,21 @@ async fn load_model(
     state: State<'_, RenderState>,
     path: String,
     level: Option<u8>,
+    install: Option<String>,
 ) -> Result<ModelInfo, String> {
-    let assets = state.assets()?;
+    let assets = state.requested(install.as_deref())?;
     let level = level.unwrap_or(0);
     let p = path.clone();
     let model = tauri::async_runtime::spawn_blocking(move || assets.model_level(&p, level))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let key = path.to_ascii_lowercase();
-    state.store(
-        if level == 0 {
-            key
-        } else {
-            format!("{key}@{level}")
-        },
-        model.buffer,
-    );
+    let served = if level == 0 {
+        path
+    } else {
+        format!("{path}@{level}")
+    };
+    state.store(buffer_key(install.as_deref(), &served), model.buffer);
     Ok(model.info)
 }
 
@@ -175,8 +247,9 @@ async fn load_holo<R: Runtime>(
     root: ScenePart,
     request: Option<HoloRequest>,
     shared: Option<bool>,
+    install: Option<String>,
 ) -> Result<HoloInfo, String> {
-    let assets = state.assets()?;
+    let assets = state.requested(install.as_deref())?;
     let id = format!("holo:{}", state.holos.fetch_add(1, Ordering::Relaxed));
     let tag = id.clone();
     let shared = shared.unwrap_or(false);
@@ -398,8 +471,9 @@ mod shared {
 async fn load_skeleton(
     state: State<'_, RenderState>,
     path: String,
+    install: Option<String>,
 ) -> Result<Vec<BoneInfo>, String> {
-    let assets = state.assets()?;
+    let assets = state.requested(install.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || assets.skeleton(&path))
         .await
         .map_err(|e| e.to_string())?
@@ -411,8 +485,9 @@ async fn load_skeleton(
 async fn load_material(
     state: State<'_, RenderState>,
     path: String,
+    install: Option<String>,
 ) -> Result<MaterialInfo, String> {
-    let assets = state.assets()?;
+    let assets = state.requested(install.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || assets.material(&path))
         .await
         .map_err(|e| e.to_string())?
@@ -459,8 +534,12 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
             )
         })
         .collect();
+    let install = query.get("install").map(String::as_str);
     if uri.path() == "/hue_lut" {
-        let v = state.assets()?.hue_lut().map_err(|e| e.to_string())?;
+        let v = state
+            .requested(install)?
+            .hue_lut()
+            .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(12 + v.data.len());
         for n in [v.width, v.height, v.depth] {
             out.extend(n.to_le_bytes());
@@ -471,7 +550,7 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
     let path = query.get("path").ok_or("missing path")?;
     match uri.path() {
         "/model" => state
-            .take_buffer(path)
+            .take_buffer(&buffer_key(install, path))
             .ok_or_else(|| format!("model not loaded: {path}")),
         "/texture" => {
             let kind = match query.get("kind").map(String::as_str) {
@@ -485,7 +564,7 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
                 .and_then(|m| m.parse().ok())
                 .unwrap_or(1024);
             let t = state
-                .assets()?
+                .requested(install)?
                 .texture(path, kind, max)
                 .map_err(|e| e.to_string())?;
             let len = t.data.len() + t.mips.iter().map(|m| m.data.len()).sum::<usize>();
@@ -501,5 +580,33 @@ fn serve(state: &RenderState, request: &Request<Vec<u8>>) -> Result<Vec<u8>, Str
             Ok(out)
         }
         other => Err(format!("unknown route {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_cannot_name_an_install_the_host_did_not_open() {
+        let state = RenderState::default();
+        let refused = state.requested(Some(r"C:\elsewhere\Data.p4k")).err();
+        assert!(refused.is_some_and(|e| e.contains("has not opened")));
+    }
+
+    #[test]
+    fn the_same_file_in_two_installs_is_two_buffers() {
+        let state = RenderState::default();
+        state.store(buffer_key(Some("live"), "A.cga"), vec![1]);
+        state.store(buffer_key(Some("ptu"), "a.CGA"), vec![2]);
+        assert_eq!(
+            state.take_buffer(&buffer_key(Some("ptu"), "a.cga")),
+            Some(vec![2])
+        );
+        assert_eq!(
+            state.take_buffer(&buffer_key(Some("live"), "a.cga")),
+            Some(vec![1])
+        );
+        assert_eq!(state.take_buffer(&buffer_key(None, "a.cga")), None);
     }
 }

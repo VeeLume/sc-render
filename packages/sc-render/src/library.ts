@@ -35,6 +35,11 @@ export type DecodeKind = 'color' | 'normal' | 'gloss' | 'normal_gloss';
  */
 export interface RenderSource {
 	/**
+	 * The same source reading another install, named by `ShipScene.install`.
+	 * Left out by a source with only one.
+	 */
+	at?(install: string): RenderSource;
+	/**
 	 * A geometry file packed for upload (layout: `ModelInfo`), at one of the
 	 * game's detail levels: 0, the default, is the full mesh, and a file
 	 * without the level asked gives its nearest finer one (`ModelInfo.level`).

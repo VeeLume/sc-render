@@ -24,6 +24,7 @@ pub use ship::{InteriorBrush, NodePart, ShipScene};
 pub use texture::{Mip, Rgba, TextureKind, Volume};
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use sc_extract::{AssetSource, Material};
@@ -44,6 +45,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// An open install plus decode caches.
 pub struct Assets {
     source: AssetSource,
+    install: Option<String>,
     textures: Mutex<HashMap<(String, TextureKind, u32), Arc<Rgba>>>,
 }
 
@@ -55,12 +57,26 @@ impl Assets {
         Ok(Self::new(AssetSource::from_install(&install)?))
     }
 
+    /// Open the `Data.p4k` at `p4k`, for a host that shows a chosen channel.
+    pub fn open_at(p4k: &Path) -> Result<Self> {
+        let mut assets = Self::new(AssetSource::open(p4k)?);
+        assets.install = Some(p4k.to_string_lossy().into_owned());
+        Ok(assets)
+    }
+
     /// Read from an archive the host already opened.
     pub fn new(source: AssetSource) -> Self {
         Self {
             source,
+            install: None,
             textures: Mutex::default(),
         }
+    }
+
+    /// The path [`open_at`](Self::open_at) was given, which names this
+    /// install to the plugin.
+    pub fn install(&self) -> Option<&str> {
+        self.install.as_deref()
     }
 
     /// The install's archive.

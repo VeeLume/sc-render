@@ -53,20 +53,28 @@ function sharedBuffer(id: string): Promise<ArrayBuffer> {
 	return new Promise((resolve) => awaited.set(id, resolve));
 }
 
-let source: RenderSource | undefined;
+const sources = new Map<string | undefined, RenderSource>();
 
-/** The plugin's source; one per app, so every cell shares its caches. */
-export function tauriSource(): RenderSource {
-	source ??= {
+/**
+ * The plugin's source; one per install, so every cell drawing from it shares
+ * its caches. Without `install`, the primary one; otherwise a path the host
+ * passed to `RenderState::assets_at`.
+ */
+export function tauriSource(install?: string): RenderSource {
+	let source = sources.get(install);
+	if (source) return source;
+	const from: Record<string, string> = install === undefined ? {} : { install };
+	source = {
+		at: tauriSource,
 		async model(path, options) {
 			const level = options?.level ?? 0;
-			const info = await invoke<ModelInfo>('plugin:sc-render|load_model', { path, level });
-			return { info, buffer: await fetchBytes(url('model', { path: level ? `${path}@${level}` : path })) };
+			const info = await invoke<ModelInfo>('plugin:sc-render|load_model', { path, level, ...from });
+			return { info, buffer: await fetchBytes(url('model', { path: level ? `${path}@${level}` : path, ...from })) };
 		},
-		material: (path) => invoke<MaterialInfo>('plugin:sc-render|load_material', { path }),
-		skeleton: (path) => invoke<BoneInfo[]>('plugin:sc-render|load_skeleton', { path }),
+		material: (path) => invoke<MaterialInfo>('plugin:sc-render|load_material', { path, ...from }),
+		skeleton: (path) => invoke<BoneInfo[]>('plugin:sc-render|load_skeleton', { path, ...from }),
 		async texture(path: string, kind: DecodeKind, max: number): Promise<TextureData> {
-			const buf = await fetchBytes(url('texture', { path, kind, max }));
+			const buf = await fetchBytes(url('texture', { path, kind, max, ...from }));
 			const view = new DataView(buf);
 			const [width, height, srgb, count] = [0, 4, 8, 12].map((o) => view.getUint32(o, true));
 			const levels: Uint8Array[] = [];
@@ -79,17 +87,18 @@ export function tauriSource(): RenderSource {
 			return { width, height, srgb: srgb !== 0, levels };
 		},
 		async holo(root: ScenePart, request?: Partial<HoloRequest>) {
-			const info = await invoke<HoloInfo>('plugin:sc-render|load_holo', { root, request: request ?? null, shared: !!webview });
+			const info = await invoke<HoloInfo>('plugin:sc-render|load_holo', { root, request: request ?? null, shared: !!webview, ...from });
 			if (!info.shared) return { info, buffer: await fetchBytes(url('model', { path: info.path })) };
 			const buffer = await sharedBuffer(info.path);
 			return { info, buffer, release: () => webview!.releaseBuffer(buffer) };
 		},
 		async hueLut(): Promise<VolumeData> {
-			const buf = await fetchBytes(url('hue_lut'));
+			const buf = await fetchBytes(url('hue_lut', from));
 			const view = new DataView(buf);
 			const [width, height, depth] = [0, 4, 8].map((o) => view.getUint32(o, true));
 			return { width, height, depth, data: new Uint8Array(buf, 12) };
 		}
 	};
+	sources.set(install, source);
 	return source;
 }

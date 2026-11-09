@@ -292,7 +292,12 @@ node_parts: NodePart[];
 /**
  * The interior's static geometry (walls, floors, fixtures).
  */
-interior: InteriorBrush[] }
+interior: InteriorBrush[]; 
+/**
+ * The install its files are read from; `None` is the primary one. Set
+ * with [`read_from`](Self::read_from).
+ */
+install: string | null }
 
 export type SubMaterialInfo = { name: string; shader: string; features: string[]; diffuse: [number, number, number]; specular: [number, number, number]; emissive: [number, number, number]; opacity: number; shininess: number; alpha_test: number; textures: TextureSlot[]; layers: LayerInfo[]; params: ([string, string])[] }
 

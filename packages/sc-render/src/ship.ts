@@ -437,18 +437,25 @@ export class ShipView {
 		this.renderer.forceContextLoss();
 	}
 
+	/** Where `ship`'s files are read: the install it was assembled against. */
+	private libraryOf(ship: ShipScene): Library {
+		const source = ship.install ? this.lib.source.at?.(ship.install) : undefined;
+		return source ? Library.of(source) : this.lib;
+	}
+
 	private async buildHolo(ship: ShipScene, log: string[]): Promise<HoloModel> {
 		const level = this.holoDetail === 'auto' ? COARSEST_LEVEL : this.holoDetail;
-		const opened = await this.lib.source.holo(ship.root, { level });
+		const { source } = this.libraryOf(ship);
+		const opened = await source.holo(ship.root, { level });
 		log.push(...opened.info.notes);
 		const look = { depth: this.depthMaterial(), lines: (depthFunc: THREE.DepthModes) => this.edgeMaterial(depthFunc) };
-		const holo = new HoloModel(this.lib.source, ship.root, opened, look, this.holoDetail);
+		const holo = new HoloModel(source, ship.root, opened, look, this.holoDetail);
 		holo.onWork = () => this.queueFrame();
 		return holo;
 	}
 
 	private async buildTextured(ship: ShipScene, log: string[]): Promise<TexturedModel> {
-		const root = await buildScene(this.lib, ship.root, log);
+		const root = await buildScene(this.libraryOf(ship), ship.root, log);
 		this.clipAll(root);
 		const byNode = new Map(ship.node_parts.map((n) => [n.node.toLowerCase(), n.part]));
 		const hull: HullMesh[] = [];
@@ -489,7 +496,7 @@ export class ShipView {
 				attachments: [],
 				palette: null
 			};
-			const source = await buildScene(this.lib, part, quiet).catch((e) => {
+			const source = await buildScene(this.libraryOf(ship), part, quiet).catch((e) => {
 				log.push(`interior ${geometry}: ${e}`);
 				return null;
 			});

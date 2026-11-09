@@ -10,8 +10,8 @@ use sc_extract::Guid;
 use sc_items_visuals::Scene;
 use serde::Serialize;
 
-use crate::ScenePart;
 use crate::scene::note;
+use crate::{Assets, ScenePart};
 
 /// A ship to draw.
 ///
@@ -30,6 +30,9 @@ pub struct ShipScene {
     pub node_parts: Vec<NodePart>,
     /// The interior's static geometry (walls, floors, fixtures).
     pub interior: Vec<InteriorBrush>,
+    /// The install its files are read from; `None` is the primary one. Set
+    /// with [`read_from`](Self::read_from).
+    pub install: Option<String>,
 }
 
 /// A hull mesh node and the damage part it belongs to.
@@ -67,6 +70,14 @@ impl ShipScene {
             notes: scene.notes.iter().map(|n| note(n, &names)).collect(),
             node_parts: Vec::new(),
             interior: Vec::new(),
+            install: None,
         }
+    }
+
+    /// Draw this ship from the install `assets` reads, which must be the one
+    /// it was assembled against.
+    pub fn read_from(mut self, assets: &Assets) -> Self {
+        self.install = assets.install().map(str::to_string);
+        self
     }
 }
