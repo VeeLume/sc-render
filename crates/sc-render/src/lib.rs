@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+pub use sc_extract;
 use sc_extract::{AssetSource, Material};
 use serde::Serialize;
 
@@ -60,6 +61,15 @@ impl Assets {
     /// Open the `Data.p4k` at `p4k`, for a host that shows a chosen channel.
     pub fn open_at(p4k: &Path) -> Result<Self> {
         let mut assets = Self::new(AssetSource::open(p4k)?);
+        assets.install = Some(p4k.to_string_lossy().into_owned());
+        Ok(assets)
+    }
+
+    /// [`open_at`](Self::open_at) through a saved
+    /// [`sc_extract::AssetIndex`], which leaves the archive's file list
+    /// unloaded. Without a usable index this is a plain `open_at`.
+    pub fn open_at_indexed(p4k: &Path, index_file: &Path) -> Result<Self> {
+        let mut assets = Self::new(AssetSource::open_indexed(p4k, index_file)?);
         assets.install = Some(p4k.to_string_lossy().into_owned());
         Ok(assets)
     }

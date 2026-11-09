@@ -5,6 +5,9 @@
 //! ```bash
 //! cargo run -p lab-catalog --release --example ship_load_cost -- Gladius Idris
 //! ```
+//!
+//! `--indexed` cooks an asset index and checks that every ship's scene and
+//! holo come out the same through it, with the archive's file list unloaded.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -44,6 +47,59 @@ fn across_cores<T: Send>(items: &[String], f: impl Fn(&str) -> T + Sync) -> Vec<
     out.into_inner().unwrap()
 }
 
+fn through_index(
+    catalog: &Catalog,
+    full: &Assets,
+    ships: &[lab_catalog::ShipSummary],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let t = Instant::now();
+    let mut builder = sc_extract::AssetIndex::builder(full.source())?;
+    catalog.cook_inputs().0.add_files(&mut builder);
+    let index = builder.finish();
+    let dir = std::env::temp_dir().join("sc-render-index-check");
+    std::fs::create_dir_all(&dir)?;
+    let index_file = dir.join("assets.index");
+    std::fs::write(&index_file, index.to_bytes())?;
+    println!("cooked {} paths in {:?}", index.len(), t.elapsed());
+
+    let p4k = sc_discovery::discover_primary()?.data_p4k();
+    let t = Instant::now();
+    let indexed = Assets::open_at_indexed(&p4k, &index_file)?;
+    println!("indexed open {:?}", t.elapsed());
+    assert!(
+        !indexed.source().holds_file_list(),
+        "the index was not used"
+    );
+
+    let request = HoloRequest {
+        level: 2,
+        ..HoloRequest::default()
+    };
+    let (mut same, mut different) = (0, Vec::new());
+    for s in ships {
+        let drawn = |assets: &Assets| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let scene = catalog.ship_scene(assets, &s.guid)?;
+            let scene = ShipScene::new(&scene, s.label.clone(), |g| g.to_string());
+            Ok(assets.holo(&scene.root, &request).buffer)
+        };
+        if drawn(&indexed)? == drawn(full)? {
+            same += 1;
+        } else {
+            different.push(s.label.clone());
+        }
+    }
+    println!(
+        "{same} of {} ships build the same holo; different: {different:?}",
+        ships.len()
+    );
+    println!(
+        "file list loaded along the way: {}",
+        indexed.source().holds_file_list()
+    );
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assets = Assets::open()?;
     let t = Instant::now();
@@ -63,6 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  parsed as a JSON value in {:?}", t.elapsed());
 
     let ships = catalog.ships();
+    if std::env::args().nth(1).as_deref() == Some("--indexed") {
+        return through_index(&catalog, &assets, &ships);
+    }
     if std::env::args().nth(1).as_deref() == Some("--repeat") {
         for name in std::env::args().skip(2) {
             let needle = name.to_lowercase();

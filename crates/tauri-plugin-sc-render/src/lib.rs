@@ -30,8 +30,8 @@
 //!
 //! A resident host calls [`RenderState::evict`] when its window goes away.
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -61,12 +61,13 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .build()
 }
 
-/// The one install open at a time, the ones the host has named, and the
-/// model buffers waiting to be fetched.
+/// The one install open at a time, the ones the host has named (each with
+/// its cooked index, if it has one), and the model buffers waiting to be
+/// fetched.
 #[derive(Default)]
 pub struct RenderState {
     opened: Mutex<Option<Opened>>,
-    known: Mutex<HashSet<String>>,
+    known: Mutex<HashMap<String, Option<PathBuf>>>,
     buffers: Mutex<HashMap<String, Pending>>,
     holos: AtomicU64,
 }
@@ -112,16 +113,28 @@ impl RenderState {
     /// # }
     /// ```
     pub fn assets_at(&self, p4k: &Path) -> Result<Arc<Assets>, String> {
+        self.named(p4k, None)
+    }
+
+    /// [`assets_at`](Self::assets_at) through a saved
+    /// [`AssetIndex`](sc_render::sc_extract::AssetIndex): the install opens
+    /// without loading the archive's file list, here and every time it is
+    /// reopened after [`evict`](Self::evict). A missing or outdated index
+    /// means a full open.
+    pub fn assets_at_indexed(&self, p4k: &Path, index: &Path) -> Result<Arc<Assets>, String> {
+        self.named(p4k, Some(index.to_path_buf()))
+    }
+
+    fn named(&self, p4k: &Path, index: Option<PathBuf>) -> Result<Arc<Assets>, String> {
         let install = p4k.to_string_lossy().into_owned();
-        let assets = self.open(Some(&install))?;
-        self.known.lock().unwrap().insert(install);
-        Ok(assets)
+        self.known.lock().unwrap().insert(install.clone(), index);
+        self.open(Some(&install))
     }
 
     /// The install a page request names.
     fn requested(&self, install: Option<&str>) -> Result<Arc<Assets>, String> {
         if let Some(i) = install
-            && !self.known.lock().unwrap().contains(i)
+            && !self.known.lock().unwrap().contains_key(i)
         {
             return Err(format!("the host has not opened this install: {i}"));
         }
@@ -139,7 +152,10 @@ impl RenderState {
         *slot = None;
         let assets = Arc::new(
             match install {
-                Some(p4k) => Assets::open_at(Path::new(p4k)),
+                Some(p4k) => match self.index_of(p4k) {
+                    Some(index) => Assets::open_at_indexed(Path::new(p4k), &index),
+                    None => Assets::open_at(Path::new(p4k)),
+                },
                 None => Assets::open(),
             }
             .map_err(|e| e.to_string())?,
@@ -149,6 +165,10 @@ impl RenderState {
             assets: assets.clone(),
         });
         Ok(assets)
+    }
+
+    fn index_of(&self, install: &str) -> Option<PathBuf> {
+        self.known.lock().unwrap().get(install).cloned().flatten()
     }
 
     /// Let go of the install, its decoded textures and any model buffer not
