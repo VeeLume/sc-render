@@ -1,6 +1,6 @@
 {
 	"name": "@veelume/sc-render",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"private": true,
 	"type": "module",
 	"description": "Star Citizen items rendered the way the game's inventory shows them, with three.js",

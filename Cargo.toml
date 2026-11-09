@@ -8,14 +8,14 @@ members = ["crates/*", "apps/lab/src-tauri", "apps/lab/crates/*"]
 [workspace.dependencies]
 # Game data: readers, item recipes and scene assembly. Bump all of these together,
 # and to the tag the consuming app pins: `Scene` crosses the crate boundary.
-sc-discovery = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
-sc-items = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
-sc-items-visuals = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
+sc-discovery = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
+sc-items = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
+sc-items-visuals = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
 # The lab's Ships page only; the library takes an assembled `Scene`.
-sc-vehicles = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
-sc-items-ship-components = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.0" }
+sc-vehicles = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
+sc-items-ship-components = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.44.1" }
 sc-render = { path = "crates/sc-render" }
 tauri-plugin-sc-render = { path = "crates/tauri-plugin-sc-render" }
 # Pinned: the rc versions of specta, specta-typescript and tauri-specta must agree.
@@ -44,13 +44,3 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
-
-# Until sc-holotable releases the index's positional reads.
-[patch."https://github.com/VeeLume/sc-holotable"]
-sc-discovery = { path = "../sc-holotable/crates/sc-discovery" }
-sc-extract = { path = "../sc-holotable/crates/sc-extract" }
-sc-items = { path = "../sc-holotable/crates/sc-items" }
-sc-items-visuals = { path = "../sc-holotable/crates/sc-items-visuals" }
-sc-vehicles = { path = "../sc-holotable/crates/sc-vehicles" }
-sc-items-ship-components = { path = "../sc-holotable/crates/sc-items-ship-components" }
-sc-weapons = { path = "../sc-holotable/crates/sc-weapons" }
