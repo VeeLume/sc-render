@@ -8,14 +8,14 @@ members = ["crates/*", "apps/lab/src-tauri", "apps/lab/crates/*"]
 [workspace.dependencies]
 # Game data: readers, item recipes and scene assembly. Bump all of these together,
 # and to the tag the consuming app pins: `Scene` crosses the crate boundary.
-sc-discovery = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
-sc-items = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
-sc-items-visuals = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
+sc-discovery = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
+sc-items = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
+sc-items-visuals = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
 # The lab's Ships page only; the library takes an assembled `Scene`.
-sc-vehicles = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
-sc-items-ship-components = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.42.0" }
+sc-vehicles = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
+sc-items-ship-components = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable", tag = "sc-holotable/v0.43.0" }
 sc-render = { path = "crates/sc-render" }
 tauri-plugin-sc-render = { path = "crates/tauri-plugin-sc-render" }
 # Pinned: the rc versions of specta, specta-typescript and tauri-specta must agree.
@@ -24,12 +24,6 @@ specta-typescript = "0.0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-
-# Until sc-holotable releases MeshGeometry::read_level; replace with a pin bump.
-[patch."https://github.com/VeeLume/sc-holotable"]
-sc-discovery = { path = "../sc-holotable/crates/sc-discovery" }
-sc-extract = { path = "../sc-holotable/crates/sc-extract" }
-sc-extract-generated = { path = "../sc-holotable/crates/sc-extract-generated" }
 
 # Profiles must live at the workspace root — member profiles are ignored.
 [profile.dev]

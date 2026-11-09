@@ -3439,6 +3439,7 @@ dependencies = [
 [[package]]
 name = "sc-discovery"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "aes",
  "cbc",
@@ -3454,6 +3455,7 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3476,6 +3478,7 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "serde",
  "svarog-common",
@@ -3504,7 +3507,7 @@ dependencies = [
 [[package]]
 name = "sc-items"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "serde",
@@ -3514,7 +3517,7 @@ dependencies = [
 [[package]]
 name = "sc-items-ship-components"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "sc-items",
@@ -3526,7 +3529,7 @@ dependencies = [
 [[package]]
 name = "sc-items-visuals"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "sc-items",
@@ -3536,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "sc-render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image_dds",
  "sc-discovery",
@@ -3552,7 +3555,7 @@ dependencies = [
 [[package]]
 name = "sc-resources"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "serde",
@@ -3562,7 +3565,7 @@ dependencies = [
 [[package]]
 name = "sc-vehicles"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "sc-items",
@@ -3576,7 +3579,7 @@ dependencies = [
 [[package]]
 name = "sc-weapons"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.42.0#a5e918511a131c2a4d2ae4b621cd3117cd1ee227"
+source = "git+https://github.com/VeeLume/sc-holotable?tag=sc-holotable%2Fv0.43.0#61f2acbc21b8704fc27aaa2773511826078a6dba"
 dependencies = [
  "sc-extract",
  "sc-items",
@@ -4500,7 +4503,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sc-render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "sc-render",
  "tauri",
