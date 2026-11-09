@@ -76,13 +76,19 @@ fn through_index(
         ..HoloRequest::default()
     };
     let (mut same, mut different) = (0, Vec::new());
+    let mut through_index = std::time::Duration::ZERO;
     for s in ships {
         let drawn = |assets: &Assets| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             let scene = catalog.ship_scene(assets, &s.guid)?;
             let scene = ShipScene::new(&scene, s.label.clone(), |g| g.to_string());
             Ok(assets.holo(&scene.root, &request).buffer)
         };
-        if drawn(&indexed)? == drawn(full)? {
+        let holo = drawn(&indexed)?;
+        // The first build warmed the OS file cache, as an earlier open has.
+        let t = Instant::now();
+        drawn(&indexed)?;
+        through_index += t.elapsed();
+        if holo == drawn(full)? {
             same += 1;
         } else {
             different.push(s.label.clone());
@@ -92,6 +98,7 @@ fn through_index(
         "{same} of {} ships build the same holo; different: {different:?}",
         ships.len()
     );
+    println!("every ship's scene and holo through the index, warm: {through_index:?}");
     println!(
         "file list loaded along the way: {}",
         indexed.source().holds_file_list()

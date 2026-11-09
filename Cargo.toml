@@ -44,3 +44,13 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Until sc-holotable releases the index's positional reads.
+[patch."https://github.com/VeeLume/sc-holotable"]
+sc-discovery = { path = "../sc-holotable/crates/sc-discovery" }
+sc-extract = { path = "../sc-holotable/crates/sc-extract" }
+sc-items = { path = "../sc-holotable/crates/sc-items" }
+sc-items-visuals = { path = "../sc-holotable/crates/sc-items-visuals" }
+sc-vehicles = { path = "../sc-holotable/crates/sc-vehicles" }
+sc-items-ship-components = { path = "../sc-holotable/crates/sc-items-ship-components" }
+sc-weapons = { path = "../sc-holotable/crates/sc-weapons" }
