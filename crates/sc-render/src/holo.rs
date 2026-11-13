@@ -1318,6 +1318,7 @@ mod tests {
                 submeshes: vec![Submesh {
                     material: 0,
                     node: None,
+                    zone: None,
                     first_index: 0,
                     index_count,
                 }],
