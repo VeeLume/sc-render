@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-sc-render"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 description = "Tauri plugin serving sc-render's models, materials, skeletons and textures to the webview"
 links = "tauri-plugin-sc-render"
