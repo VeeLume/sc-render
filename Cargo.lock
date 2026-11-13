@@ -3539,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "sc-render"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "image_dds",
  "sc-discovery",
@@ -4503,7 +4503,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sc-render"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "sc-render",
  "tauri",
